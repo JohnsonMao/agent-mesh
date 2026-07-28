@@ -1,6 +1,7 @@
 import os
 from datetime import datetime
 from dotenv import load_dotenv
+from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
@@ -9,12 +10,19 @@ from langgraph.prebuilt import ToolNode, tools_condition
 
 load_dotenv()
 
-@tool
+class GetCurrentTimeInput(BaseModel):
+    pass
+
+class AddNumbersInput(BaseModel):
+    a: int = Field(..., description="The first integer.")
+    b: int = Field(..., description="The second integer.")
+
+@tool(args_schema=GetCurrentTimeInput)
 def get_current_time() -> str:
     """Return current local time in a human-readable format."""
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-@tool
+@tool(args_schema=AddNumbersInput)
 def add_numbers(a: int, b: int) -> int:
     """Return the sum of two integers."""
     return a + b
