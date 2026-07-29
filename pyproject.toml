@@ -11,3 +11,50 @@ dependencies = [
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.0",
+    "mypy>=2.3.0",
+    "poethepoet>=0.48.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "N",      # pep8-naming
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+]
+ignore = ["E501"]  # line too long
+
+[tool.ruff.lint.isort]
+known-third-party = ["langchain", "langgraph", "pydantic", "dotenv"]
+
+[tool.mypy]
+python_version = "3.13"
+warn_return_any = true
+warn_unused_configs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+
+[tool.poe.tasks]
+install = "uv sync"
+check = "ruff check ."
+format = "ruff format ."
+type-check = "mypy main.py"
+lint = ["check", "type-check"]
+fix = ["_ruff-fix", "format"]
+_ruff-fix = "ruff check . --fix"
+dev = "python main.py"
