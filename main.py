@@ -22,6 +22,19 @@ class AddNumbersInput(BaseModel):
     b: int = Field(..., description="The second integer.")
 
 
+class AgentResponse(BaseModel):
+    """Structured final answer returned to the caller."""
+
+    answer: str = Field(..., description="The final answer to the user's request.")
+    used_tools: list[str] = Field(
+        default_factory=list, description="Names of tools invoked while answering."
+    )
+
+
+class AgentState(MessagesState):
+    structured_response: AgentResponse | None
+
+
 @tool(args_schema=GetCurrentTimeInput)
 def get_current_time() -> str:
     """Return current local time in a human-readable format."""
@@ -46,19 +59,31 @@ def build_llm() -> ChatOpenAI:
 def build_graph(llm: ChatOpenAI) -> CompiledStateGraph:
     tools = [get_current_time, add_numbers]
     llm_with_tools = llm.bind_tools(tools)
+    structured_llm = llm.with_structured_output(AgentResponse)
 
-    def call_model(state: MessagesState) -> dict:
+    def call_model(state: AgentState) -> dict:
         response = llm_with_tools.invoke(state["messages"])
         return {"messages": [response]}
 
-    graph = StateGraph(MessagesState)
+    def respond(state: AgentState) -> dict:
+        used_tools = [
+            message.name
+            for message in state["messages"]
+            if isinstance(message, ToolMessage) and message.name
+        ]
+        structured = structured_llm.invoke(state["messages"])
+        structured.used_tools = used_tools
+        return {"structured_response": structured}
+
+    graph = StateGraph(AgentState)
     graph.add_node("model", call_model)
     graph.add_node("tools", ToolNode(tools))
+    graph.add_node("respond", respond)
 
     graph.add_edge(START, "model")
-    graph.add_conditional_edges("model", tools_condition)
+    graph.add_conditional_edges("model", tools_condition, {"tools": "tools", END: "respond"})
     graph.add_edge("tools", "model")
-    graph.add_edge("model", END)
+    graph.add_edge("respond", END)
     return graph.compile()
 
 
@@ -76,10 +101,10 @@ def main():
         print(f"User: {user_input}\n")
 
         result = app.invoke({"messages": [HumanMessage(content=user_input)]})
-        used_tool = any(isinstance(message, ToolMessage) for message in result["messages"])
+        structured: AgentResponse = result["structured_response"]
 
-        print(f"Tool used: {used_tool}")
-        print(f"AI: {result['messages'][-1].content}\n")
+        print(f"Tools used: {structured.used_tools}")
+        print(f"Answer: {structured.answer}\n")
 
 
 if __name__ == "__main__":
