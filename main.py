@@ -2,13 +2,14 @@ import os
 from datetime import datetime
 
 from dotenv import load_dotenv
+from langchain.chat_models import init_chat_model
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field
 
 load_dotenv()
 
@@ -47,16 +48,17 @@ def add_numbers(a: int, b: int) -> int:
     return a + b
 
 
-def build_llm() -> ChatOpenAI:
-    return ChatOpenAI(
-        base_url=os.getenv("LM_STUDIO_BASE_URL", "http://localhost:1234/v1"),
-        api_key=SecretStr("lm-studio"),
+def build_llm() -> BaseChatModel:
+    return init_chat_model(
         model=os.getenv("LM_STUDIO_MODEL", "gemma-4-e4b"),
+        model_provider="openai",
+        base_url=os.getenv("LM_STUDIO_BASE_URL", "http://localhost:1234/v1"),
+        api_key="lm-studio",
         temperature=0.2,
     )
 
 
-def build_graph(llm: ChatOpenAI) -> CompiledStateGraph:
+def build_graph(llm: BaseChatModel) -> CompiledStateGraph:
     tools = [get_current_time, add_numbers]
     llm_with_tools = llm.bind_tools(tools)
     structured_llm = llm.with_structured_output(AgentResponse)
