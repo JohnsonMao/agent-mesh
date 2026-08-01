@@ -1,10 +1,11 @@
 import os
+import re
 from datetime import datetime
 
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -12,6 +13,12 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from pydantic import BaseModel, Field
 
 load_dotenv()
+
+SYSTEM_PROMPT = "請一律使用繁體中文回答，不要夾雜其他語言。"
+
+# Some local models occasionally leak a malformed tool-call as plain text instead of a proper tool_calls entry.
+LEAKED_TOOL_CALL_PATTERN = re.compile(r"<\|?tool_call\|?>")
+MAX_MODEL_RETRIES = 3
 
 
 class GetCurrentTimeInput(BaseModel):
@@ -26,14 +33,12 @@ class AddNumbersInput(BaseModel):
 class AgentResponse(BaseModel):
     """Structured final answer returned to the caller."""
 
-    answer: str = Field(..., description="The final answer to the user's request.")
+    answer: str = Field(
+        ..., description="The final answer to the user's request, in Traditional Chinese."
+    )
     used_tools: list[str] = Field(
         default_factory=list, description="Names of tools invoked while answering."
     )
-
-
-class AgentState(MessagesState):
-    structured_response: AgentResponse | None
 
 
 @tool(args_schema=GetCurrentTimeInput)
@@ -55,37 +60,30 @@ def build_llm() -> BaseChatModel:
         base_url=os.getenv("LM_STUDIO_BASE_URL", "http://localhost:1234/v1"),
         api_key="lm-studio",
         temperature=0.2,
+        max_tokens=1024,
     )
 
 
 def build_graph(llm: BaseChatModel) -> CompiledStateGraph:
     tools = [get_current_time, add_numbers]
     llm_with_tools = llm.bind_tools(tools)
-    structured_llm = llm.with_structured_output(AgentResponse)
 
-    def call_model(state: AgentState) -> dict:
+    def call_model(state: MessagesState) -> dict:
         response = llm_with_tools.invoke(state["messages"])
+        for _ in range(MAX_MODEL_RETRIES - 1):
+            content = response.content if isinstance(response.content, str) else ""
+            if response.tool_calls or not LEAKED_TOOL_CALL_PATTERN.search(content):
+                break
+            response = llm_with_tools.invoke(state["messages"])
         return {"messages": [response]}
 
-    def respond(state: AgentState) -> dict:
-        used_tools = [
-            message.name
-            for message in state["messages"]
-            if isinstance(message, ToolMessage) and message.name
-        ]
-        structured = structured_llm.invoke(state["messages"])
-        structured.used_tools = used_tools
-        return {"structured_response": structured}
-
-    graph = StateGraph(AgentState)
+    graph = StateGraph(MessagesState)
     graph.add_node("model", call_model)
     graph.add_node("tools", ToolNode(tools))
-    graph.add_node("respond", respond)
 
     graph.add_edge(START, "model")
-    graph.add_conditional_edges("model", tools_condition, {"tools": "tools", END: "respond"})
+    graph.add_conditional_edges("model", tools_condition, {"tools": "tools", END: END})
     graph.add_edge("tools", "model")
-    graph.add_edge("respond", END)
     return graph.compile()
 
 
@@ -102,8 +100,17 @@ def main():
         print(f"=== Case {idx} ===")
         print(f"User: {user_input}\n")
 
-        result = app.invoke({"messages": [HumanMessage(content=user_input)]})
-        structured: AgentResponse = result["structured_response"]
+        messages = [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=user_input)]
+        result = app.invoke({"messages": messages})
+
+        used_tools = [
+            message.name
+            for message in result["messages"]
+            if isinstance(message, ToolMessage) and message.name
+        ]
+        last_message = result["messages"][-1]
+        answer = last_message.content if isinstance(last_message, AIMessage) else ""
+        structured = AgentResponse(answer=str(answer), used_tools=used_tools)
 
         print(f"Tools used: {structured.used_tools}")
         print(f"Answer: {structured.answer}\n")
