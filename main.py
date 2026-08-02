@@ -1,8 +1,9 @@
+import json
 import os
 import re
 from datetime import datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
@@ -22,6 +23,8 @@ SYSTEM_PROMPT = "請一律使用繁體中文回答，不要夾雜其他語言。
 
 # Some local models occasionally leak a malformed tool-call as plain text instead of a proper tool_calls entry.
 LEAKED_TOOL_CALL_PATTERN = re.compile(r"<\|?tool_call\|?>")
+# e.g. "<|tool_call>call:add_numbers{a:23,b:19}" -> name="add_numbers", args="a:23,b:19"
+LEAKED_TOOL_CALL_DETAIL_PATTERN = re.compile(r"call:(?P<name>\w+)\{(?P<args>[^}]*)\}")
 MAX_MODEL_RETRIES = 3
 
 
@@ -99,6 +102,25 @@ def build_llm() -> BaseChatModel:
     )
 
 
+def _parse_leaked_tool_call(content: str) -> dict[str, Any] | None:
+    """Best-effort recovery of a malformed tool-call leaked as plain text content."""
+    match = LEAKED_TOOL_CALL_DETAIL_PATTERN.search(content)
+    if not match:
+        return None
+
+    args: dict[str, Any] = {}
+    for pair in match.group("args").split(","):
+        key, _, value = pair.partition(":")
+        key, value = key.strip(), value.strip()
+        if not key:
+            continue
+        try:
+            args[key] = json.loads(value)
+        except json.JSONDecodeError:
+            args[key] = value
+    return {"name": match.group("name"), "args": args}
+
+
 def build_graph(llm: BaseChatModel) -> CompiledStateGraph:
     tools = [get_current_time, add_numbers]
     llm_with_tools = llm.bind_tools(tools)
@@ -110,6 +132,15 @@ def build_graph(llm: BaseChatModel) -> CompiledStateGraph:
             if response.tool_calls or not LEAKED_TOOL_CALL_PATTERN.search(content):
                 break
             response = llm_with_tools.invoke(state["messages"])
+
+        content = response.content if isinstance(response.content, str) else ""
+        if not response.tool_calls and LEAKED_TOOL_CALL_PATTERN.search(content):
+            leaked = _parse_leaked_tool_call(content)
+            if leaked:
+                response = AIMessage(
+                    content="",
+                    tool_calls=[{**leaked, "id": str(uuid4())}],
+                )
         return {"messages": [response]}
 
     graph = StateGraph(MessagesState)
@@ -136,7 +167,9 @@ def main():
         print(f"User: {user_input}\n")
 
         messages = [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=user_input)]
-        result = app.invoke({"messages": messages}, config={"callbacks": [LoggingCallbackHandler()]})
+        result = app.invoke(
+            {"messages": messages}, config={"callbacks": [LoggingCallbackHandler()]}
+        )
 
         used_tools = [
             message.name
