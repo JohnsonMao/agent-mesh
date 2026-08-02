@@ -1,11 +1,15 @@
 import os
 import re
 from datetime import datetime
+from typing import Any
+from uuid import UUID
 
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.outputs import LLMResult
 from langchain_core.tools import tool
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -39,6 +43,37 @@ class AgentResponse(BaseModel):
     used_tools: list[str] = Field(
         default_factory=list, description="Names of tools invoked while answering."
     )
+
+
+class LoggingCallbackHandler(BaseCallbackHandler):
+    """Hooks into the chat model / tool lifecycle to log execution events."""
+
+    def on_chat_model_start(
+        self,
+        serialized: dict[str, Any],
+        messages: list[list[BaseMessage]],
+        *,
+        run_id: UUID,
+        **kwargs: Any,
+    ) -> None:
+        print(f"[hook] model start: {len(messages[0])} messages")
+
+    def on_llm_end(self, response: LLMResult, *, run_id: UUID, **kwargs: Any) -> None:
+        print("[hook] model end")
+
+    def on_tool_start(
+        self,
+        serialized: dict[str, Any],
+        input_str: str,
+        *,
+        run_id: UUID,
+        **kwargs: Any,
+    ) -> None:
+        name = serialized.get("name", "unknown")
+        print(f"[hook] tool start: {name}({input_str})")
+
+    def on_tool_end(self, output: Any, *, run_id: UUID, **kwargs: Any) -> None:
+        print(f"[hook] tool end: {output}")
 
 
 @tool(args_schema=GetCurrentTimeInput)
@@ -101,7 +136,7 @@ def main():
         print(f"User: {user_input}\n")
 
         messages = [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=user_input)]
-        result = app.invoke({"messages": messages})
+        result = app.invoke({"messages": messages}, config={"callbacks": [LoggingCallbackHandler()]})
 
         used_tools = [
             message.name
