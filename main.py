@@ -12,6 +12,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import LLMResult
 from langchain_core.tools import tool
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
@@ -150,7 +151,8 @@ def build_graph(llm: BaseChatModel) -> CompiledStateGraph:
     graph.add_edge(START, "model")
     graph.add_conditional_edges("model", tools_condition, {"tools": "tools", END: END})
     graph.add_edge("tools", "model")
-    return graph.compile()
+    # Checkpointer keeps message history per thread_id so callers don't need to resend it.
+    return graph.compile(checkpointer=InMemorySaver())
 
 
 def main():
@@ -159,17 +161,21 @@ def main():
 
     test_inputs = [
         "現在幾點？順便幫我算 23 + 19",
-        "簡單介紹你自己",
+        "我剛剛請你算的兩個數字加起來是多少？",
     ]
+    # Same thread_id lets the checkpointer restore prior turns automatically.
+    config: dict[str, Any] = {
+        "configurable": {"thread_id": "demo-thread"},
+        "callbacks": [LoggingCallbackHandler()],
+    }
 
     for idx, user_input in enumerate(test_inputs, start=1):
         print(f"=== Case {idx} ===")
         print(f"User: {user_input}\n")
 
-        messages = [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=user_input)]
-        result = app.invoke(
-            {"messages": messages}, config={"callbacks": [LoggingCallbackHandler()]}
-        )
+        messages: list[BaseMessage] = [SystemMessage(content=SYSTEM_PROMPT)] if idx == 1 else []
+        messages.append(HumanMessage(content=user_input))
+        result = app.invoke({"messages": messages}, config=config)
 
         used_tools = [
             message.name
