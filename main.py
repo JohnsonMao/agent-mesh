@@ -11,8 +11,10 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import LLMResult
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
@@ -27,6 +29,7 @@ LEAKED_TOOL_CALL_PATTERN = re.compile(r"<\|?tool_call\|?>")
 # e.g. "<|tool_call>call:add_numbers{a:23,b:19}" -> name="add_numbers", args="a:23,b:19"
 LEAKED_TOOL_CALL_DETAIL_PATTERN = re.compile(r"call:(?P<name>\w+)\{(?P<args>[^}]*)\}")
 MAX_MODEL_RETRIES = 3
+CHECKPOINT_DB_PATH = "checkpoints.sqlite"
 
 
 class GetCurrentTimeInput(BaseModel):
@@ -122,7 +125,7 @@ def _parse_leaked_tool_call(content: str) -> dict[str, Any] | None:
     return {"name": match.group("name"), "args": args}
 
 
-def build_graph(llm: BaseChatModel) -> CompiledStateGraph:
+def build_graph(llm: BaseChatModel, checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     tools = [get_current_time, add_numbers]
     llm_with_tools = llm.bind_tools(tools)
 
@@ -152,42 +155,45 @@ def build_graph(llm: BaseChatModel) -> CompiledStateGraph:
     graph.add_conditional_edges("model", tools_condition, {"tools": "tools", END: END})
     graph.add_edge("tools", "model")
     # Checkpointer keeps message history per thread_id so callers don't need to resend it.
-    return graph.compile(checkpointer=InMemorySaver())
+    return graph.compile(checkpointer=checkpointer)
 
 
 def main():
     llm = build_llm()
-    app = build_graph(llm)
 
     test_inputs = [
         "現在幾點？順便幫我算 23 + 19",
         "我剛剛請你算的兩個數字加起來是多少？",
     ]
     # Same thread_id lets the checkpointer restore prior turns automatically.
-    config: dict[str, Any] = {
+    config: RunnableConfig = {
         "configurable": {"thread_id": "demo-thread"},
         "callbacks": [LoggingCallbackHandler()],
     }
 
-    for idx, user_input in enumerate(test_inputs, start=1):
-        print(f"=== Case {idx} ===")
-        print(f"User: {user_input}\n")
+    # SqliteSaver persists checkpoints to a local file so history survives process restarts.
+    with SqliteSaver.from_conn_string(CHECKPOINT_DB_PATH) as checkpointer:
+        app = build_graph(llm, checkpointer)
 
-        messages: list[BaseMessage] = [SystemMessage(content=SYSTEM_PROMPT)] if idx == 1 else []
-        messages.append(HumanMessage(content=user_input))
-        result = app.invoke({"messages": messages}, config=config)
+        for idx, user_input in enumerate(test_inputs, start=1):
+            print(f"=== Case {idx} ===")
+            print(f"User: {user_input}\n")
 
-        used_tools = [
-            message.name
-            for message in result["messages"]
-            if isinstance(message, ToolMessage) and message.name
-        ]
-        last_message = result["messages"][-1]
-        answer = last_message.content if isinstance(last_message, AIMessage) else ""
-        structured = AgentResponse(answer=str(answer), used_tools=used_tools)
+            messages: list[BaseMessage] = [SystemMessage(content=SYSTEM_PROMPT)] if idx == 1 else []
+            messages.append(HumanMessage(content=user_input))
+            result = app.invoke({"messages": messages}, config=config)
 
-        print(f"Tools used: {structured.used_tools}")
-        print(f"Answer: {structured.answer}\n")
+            used_tools = [
+                message.name
+                for message in result["messages"]
+                if isinstance(message, ToolMessage) and message.name
+            ]
+            last_message = result["messages"][-1]
+            answer = last_message.content if isinstance(last_message, AIMessage) else ""
+            structured = AgentResponse(answer=str(answer), used_tools=used_tools)
+
+            print(f"Tools used: {structured.used_tools}")
+            print(f"Answer: {structured.answer}\n")
 
 
 if __name__ == "__main__":

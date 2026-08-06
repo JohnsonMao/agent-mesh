@@ -14,6 +14,11 @@ build/
 .env.local
 .env.*.local
 
+# LangGraph local checkpoints
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
 # macOS
 .DS_Store
 
