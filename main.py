@@ -20,6 +20,8 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 from pydantic import BaseModel, Field
 
+from checkpoint_history import CHECKPOINT_DB_PATH
+
 load_dotenv()
 
 SYSTEM_PROMPT = "請一律使用繁體中文回答，不要夾雜其他語言。"
@@ -29,7 +31,6 @@ LEAKED_TOOL_CALL_PATTERN = re.compile(r"<\|?tool_call\|?>")
 # e.g. "<|tool_call>call:add_numbers{a:23,b:19}" -> name="add_numbers", args="a:23,b:19"
 LEAKED_TOOL_CALL_DETAIL_PATTERN = re.compile(r"call:(?P<name>\w+)\{(?P<args>[^}]*)\}")
 MAX_MODEL_RETRIES = 3
-CHECKPOINT_DB_PATH = "checkpoints.sqlite"
 
 
 class GetCurrentTimeInput(BaseModel):
