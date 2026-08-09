@@ -24,7 +24,7 @@ from langgraph.store.sqlite import SqliteStore
 from pydantic import BaseModel, Field
 
 from checkpoint_history import CHECKPOINT_DB_PATH
-from long_term_memory import MEMORY_DB_PATH, memory_namespace
+from long_term_memory import MEMORY_DB_PATH, MEMORY_TOP_K, memory_index_config, memory_namespace
 
 load_dotenv()
 
@@ -160,7 +160,13 @@ def build_graph(
 
     def load_memory(state: AgentState, config: RunnableConfig, *, store: BaseStore) -> dict:
         user_id = config["configurable"]["user_id"]
-        memories = sorted(store.search(memory_namespace(user_id)), key=lambda item: item.created_at)
+        # Semantic top-k recall instead of loading every memory: query with the latest
+        # human turn so only the most relevant facts get injected into the prompt.
+        last_human = next(
+            (m for m in reversed(state["messages"]) if isinstance(m, HumanMessage)), None
+        )
+        query = str(last_human.content) if last_human else None
+        memories = store.search(memory_namespace(user_id), query=query, limit=MEMORY_TOP_K)
         recalled = "\n".join(f"- {item.value['content']}" for item in memories)
         return {"recalled_memory": recalled}
 
@@ -218,7 +224,7 @@ def main():
     # SqliteSaver persists per-thread history; SqliteStore persists per-user long-term memories.
     with (
         SqliteSaver.from_conn_string(CHECKPOINT_DB_PATH) as checkpointer,
-        SqliteStore.from_conn_string(MEMORY_DB_PATH) as store,
+        SqliteStore.from_conn_string(MEMORY_DB_PATH, index=memory_index_config()) as store,
     ):
         app = build_graph(llm, checkpointer, store)
 
