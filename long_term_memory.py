@@ -9,6 +9,9 @@ from pydantic import SecretStr
 MEMORY_DB_PATH = "memory_store.sqlite"
 MEMORY_INDEX_DIMS = 1024  # bge-m3 dense embedding size, served locally by LM Studio
 MEMORY_TOP_K = 5
+# store.search's LIMIT always fills up to MEMORY_TOP_K regardless of relevance, so this
+# cosine-similarity cutoff drops weak matches that would otherwise pollute the prompt.
+MEMORY_SCORE_THRESHOLD = 0.4
 
 
 def memory_namespace(user_id: str) -> tuple[str, str]:

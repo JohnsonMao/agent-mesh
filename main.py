@@ -24,11 +24,20 @@ from langgraph.store.sqlite import SqliteStore
 from pydantic import BaseModel, Field
 
 from checkpoint_history import CHECKPOINT_DB_PATH
-from long_term_memory import MEMORY_DB_PATH, MEMORY_TOP_K, memory_index_config, memory_namespace
+from long_term_memory import (
+    MEMORY_DB_PATH,
+    MEMORY_SCORE_THRESHOLD,
+    MEMORY_TOP_K,
+    memory_index_config,
+    memory_namespace,
+)
 
 load_dotenv()
 
-SYSTEM_PROMPT = "請一律使用繁體中文回答，不要夾雜其他語言。"
+SYSTEM_PROMPT = (
+    "請一律使用繁體中文回答，不要夾雜其他語言。"
+    "若需要知道使用者過去提過的偏好或事實，可呼叫 recall_memory 工具查詢，不要憑空假設。"
+)
 
 # Some local models occasionally leak a malformed tool-call as plain text instead of a proper tool_calls entry.
 LEAKED_TOOL_CALL_PATTERN = re.compile(r"<\|?tool_call\|?>")
@@ -51,6 +60,10 @@ class SaveMemoryInput(BaseModel):
         ...,
         description="A fact or preference about the user worth recalling in future conversations.",
     )
+
+
+class RecallMemoryInput(BaseModel):
+    query: str = Field(..., description="What to look up in the user's saved facts/preferences.")
 
 
 class AgentResponse(BaseModel):
@@ -116,6 +129,18 @@ def save_memory(content: str) -> str:
     return "已記住這件事。"
 
 
+@tool(args_schema=RecallMemoryInput)
+def recall_memory(query: str) -> str:
+    """Search the user's saved long-term facts/preferences relevant to the given query."""
+    store = get_store()
+    user_id = get_config()["configurable"]["user_id"]
+    memories = store.search(memory_namespace(user_id), query=query, limit=MEMORY_TOP_K)
+    relevant = [m for m in memories if m.score is None or m.score >= MEMORY_SCORE_THRESHOLD]
+    if not relevant:
+        return "沒有找到相關記憶。"
+    return "\n".join(f"- {item.value['content']}" for item in relevant)
+
+
 def build_llm() -> BaseChatModel:
     return init_chat_model(
         model=os.getenv("LM_STUDIO_MODEL", "gemma-4-e4b"),
@@ -146,37 +171,14 @@ def _parse_leaked_tool_call(content: str) -> dict[str, Any] | None:
     return {"name": match.group("name"), "args": args}
 
 
-class AgentState(MessagesState):
-    # Recalled once per turn (not per model call) so the tool-calling loop reuses one stable
-    # value instead of re-querying the store and shifting the prompt prefix on every hop.
-    recalled_memory: str
-
-
 def build_graph(
     llm: BaseChatModel, checkpointer: BaseCheckpointSaver, store: BaseStore
 ) -> CompiledStateGraph:
-    tools = [get_current_time, add_numbers, save_memory]
+    tools = [get_current_time, add_numbers, save_memory, recall_memory]
     llm_with_tools = llm.bind_tools(tools)
 
-    def load_memory(state: AgentState, config: RunnableConfig, *, store: BaseStore) -> dict:
-        user_id = config["configurable"]["user_id"]
-        # Semantic top-k recall instead of loading every memory: query with the latest
-        # human turn so only the most relevant facts get injected into the prompt.
-        last_human = next(
-            (m for m in reversed(state["messages"]) if isinstance(m, HumanMessage)), None
-        )
-        query = str(last_human.content) if last_human else None
-        memories = store.search(memory_namespace(user_id), query=query, limit=MEMORY_TOP_K)
-        recalled = "\n".join(f"- {item.value['content']}" for item in memories)
-        return {"recalled_memory": recalled}
-
-    def call_model(state: AgentState) -> dict:
+    def call_model(state: MessagesState) -> dict:
         messages = state["messages"]
-        if state.get("recalled_memory"):
-            recall_message = SystemMessage(
-                content=f"已知的使用者記憶：\n{state['recalled_memory']}"
-            )
-            messages = [recall_message, *messages]
 
         response = llm_with_tools.invoke(messages)
         for _ in range(MAX_MODEL_RETRIES - 1):
@@ -195,13 +197,11 @@ def build_graph(
                 )
         return {"messages": [response]}
 
-    graph = StateGraph(AgentState)
-    graph.add_node("load_memory", load_memory)
+    graph = StateGraph(MessagesState)
     graph.add_node("model", call_model)
     graph.add_node("tools", ToolNode(tools))
 
-    graph.add_edge(START, "load_memory")
-    graph.add_edge("load_memory", "model")
+    graph.add_edge(START, "model")
     graph.add_conditional_edges("model", tools_condition, {"tools": "tools", END: END})
     graph.add_edge("tools", "model")
     # Checkpointer keeps message history per thread_id; store keeps facts per user_id across threads.
@@ -216,9 +216,8 @@ def main():
         ("demo-thread", "現在幾點？順便幫我算 23 + 19"),
         ("demo-thread", "我剛剛請你算的兩個數字加起來是多少？"),
         ("demo-thread", "我喜歡喝黑咖啡，不加糖，麻煩你記住這個偏好。"),
-        # New thread_id, same user_id: the checkpointer has no history here,
-        # but the long-term store still recalls the previously saved preference.
         ("demo-thread-2", "你知道我喜歡喝什麼咖啡嗎？"),
+        ("demo-thread-3", "你知道我叫什麼名字嗎？"),
     ]
 
     # SqliteSaver persists per-thread history; SqliteStore persists per-user long-term memories.
