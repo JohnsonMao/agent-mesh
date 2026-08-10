@@ -1,10 +1,10 @@
 import os
 import sys
 
-from langchain_openai import OpenAIEmbeddings
+from langchain.embeddings import init_embeddings
+from langchain_core.embeddings import Embeddings
 from langgraph.store.base import IndexConfig
 from langgraph.store.sqlite import SqliteStore
-from pydantic import SecretStr
 
 MEMORY_DB_PATH = "memory_store.sqlite"
 MEMORY_INDEX_DIMS = 1024  # bge-m3 dense embedding size, served locally by LM Studio
@@ -19,12 +19,13 @@ def memory_namespace(user_id: str) -> tuple[str, str]:
     return (user_id, "memories")
 
 
-def build_memory_embeddings() -> OpenAIEmbeddings:
+def build_memory_embeddings() -> Embeddings:
     """Embeddings client for semantic memory search, served locally by LM Studio."""
-    return OpenAIEmbeddings(
+    return init_embeddings(
         model=os.getenv("LM_STUDIO_EMBEDDING_MODEL", "bge-m3"),
+        provider="openai",
         base_url=os.getenv("LM_STUDIO_BASE_URL", "http://localhost:1234/v1"),
-        api_key=SecretStr("lm-studio"),
+        api_key="lm-studio",
         check_embedding_ctx_length=False,
     )
 
