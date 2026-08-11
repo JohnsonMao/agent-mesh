@@ -6,7 +6,8 @@ from langchain_core.embeddings import Embeddings
 from langgraph.store.base import IndexConfig
 from langgraph.store.sqlite import SqliteStore
 
-MEMORY_DB_PATH = "memory_store.sqlite"
+MEMORY_DB_PATH = os.path.join("data", "memory_store.sqlite")
+os.makedirs(os.path.dirname(MEMORY_DB_PATH), exist_ok=True)
 MEMORY_INDEX_DIMS = 1024  # bge-m3 dense embedding size, served locally by LM Studio
 MEMORY_TOP_K = 5
 # store.search's LIMIT always fills up to MEMORY_TOP_K regardless of relevance, so this

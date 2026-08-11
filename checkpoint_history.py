@@ -1,9 +1,11 @@
+import os
 import sys
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-CHECKPOINT_DB_PATH = "checkpoints.sqlite"
+CHECKPOINT_DB_PATH = os.path.join("data", "checkpoints.sqlite")
+os.makedirs(os.path.dirname(CHECKPOINT_DB_PATH), exist_ok=True)
 
 
 def print_thread_history(thread_id: str, db_path: str = CHECKPOINT_DB_PATH) -> None:
