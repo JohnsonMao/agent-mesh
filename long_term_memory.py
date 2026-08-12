@@ -6,13 +6,11 @@ from langchain_core.embeddings import Embeddings
 from langgraph.store.base import IndexConfig
 from langgraph.store.sqlite import SqliteStore
 
+from config import LM_STUDIO_BASE_URL, LM_STUDIO_EMBEDDING_MODEL, MEMORY_TOP_K
+
 MEMORY_DB_PATH = os.path.join("data", "memory_store.sqlite")
 os.makedirs(os.path.dirname(MEMORY_DB_PATH), exist_ok=True)
 MEMORY_INDEX_DIMS = 1024  # bge-m3 dense embedding size, served locally by LM Studio
-MEMORY_TOP_K = 5
-# store.search's LIMIT always fills up to MEMORY_TOP_K regardless of relevance, so this
-# cosine-similarity cutoff drops weak matches that would otherwise pollute the prompt.
-MEMORY_SCORE_THRESHOLD = 0.4
 
 
 def memory_namespace(user_id: str) -> tuple[str, str]:
@@ -23,9 +21,9 @@ def memory_namespace(user_id: str) -> tuple[str, str]:
 def build_memory_embeddings() -> Embeddings:
     """Embeddings client for semantic memory search, served locally by LM Studio."""
     return init_embeddings(
-        model=os.getenv("LM_STUDIO_EMBEDDING_MODEL", "bge-m3"),
+        model=LM_STUDIO_EMBEDDING_MODEL,
         provider="openai",
-        base_url=os.getenv("LM_STUDIO_BASE_URL", "http://localhost:1234/v1"),
+        base_url=LM_STUDIO_BASE_URL,
         api_key="lm-studio",
         check_embedding_ctx_length=False,
     )

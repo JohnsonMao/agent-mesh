@@ -1,11 +1,9 @@
 import json
-import os
 import re
 from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -24,15 +22,15 @@ from langgraph.store.sqlite import SqliteStore
 from pydantic import BaseModel, Field
 
 from checkpoint_history import CHECKPOINT_DB_PATH
-from long_term_memory import (
-    MEMORY_DB_PATH,
+from config import (
+    LM_STUDIO_BASE_URL,
+    LM_STUDIO_MODEL,
     MEMORY_SCORE_THRESHOLD,
     MEMORY_TOP_K,
-    memory_index_config,
-    memory_namespace,
+    MODEL_MAX_TOKENS,
+    MODEL_TEMPERATURE,
 )
-
-load_dotenv()
+from long_term_memory import MEMORY_DB_PATH, memory_index_config, memory_namespace
 
 SYSTEM_PROMPT = (
     "請一律使用繁體中文回答，不要夾雜其他語言。"
@@ -143,12 +141,12 @@ def recall_memory(query: str) -> str:
 
 def build_llm() -> BaseChatModel:
     return init_chat_model(
-        model=os.getenv("LM_STUDIO_MODEL", "gemma-4-e4b"),
+        model=LM_STUDIO_MODEL,
         model_provider="openai",
-        base_url=os.getenv("LM_STUDIO_BASE_URL", "http://localhost:1234/v1"),
+        base_url=LM_STUDIO_BASE_URL,
         api_key="lm-studio",
-        temperature=0.2,
-        max_tokens=1024,
+        temperature=MODEL_TEMPERATURE,
+        max_tokens=MODEL_MAX_TOKENS,
     )
 
 
