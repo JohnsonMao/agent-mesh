@@ -38,6 +38,12 @@ SYSTEM_PROMPT = (
     "若需要知道使用者過去提過的偏好或事實，可呼叫 recall_memory 工具查詢，不要憑空假設。"
 )
 
+MEMORY_MERGE_PROMPT = (
+    "你會收到使用者的一則舊記憶與一則新記憶，兩者語意相近但細節可能有新增或修改。"
+    "請將兩者合併成一句簡潔、不重複、涵蓋所有細節的繁體中文敘述（若有衝突以新記憶為準），"
+    "只輸出合併後的句子，不要加任何說明或標點以外的文字。"
+)
+
 # Some local models occasionally leak a malformed tool-call as plain text instead of a proper tool_calls entry.
 LEAKED_TOOL_CALL_PATTERN = re.compile(r"<\|?tool_call\|?>")
 # e.g. "<|tool_call>call:add_numbers{a:23,b:19}" -> name="add_numbers", args="a:23,b:19"
@@ -135,8 +141,9 @@ def save_memory(content: str) -> str:
         else None
     )
     if duplicate:
-        store.put(namespace, duplicate.key, {"content": content})
-        return "已更新既有的相似記憶。"
+        merged_content = _merge_memory_content(duplicate.value["content"], content)
+        store.put(namespace, duplicate.key, {"content": merged_content})
+        return "已合併既有的相似記憶。"
 
     store.put(namespace, str(uuid4()), {"content": content})
     return "已記住這件事。"
@@ -163,6 +170,18 @@ def build_llm() -> BaseChatModel:
         temperature=MODEL_TEMPERATURE,
         max_tokens=MODEL_MAX_TOKENS,
     )
+
+
+def _merge_memory_content(old_content: str, new_content: str) -> str:
+    """Ask the LLM to fold a new memory into an existing near-duplicate one."""
+    response = build_llm().invoke(
+        [
+            SystemMessage(content=MEMORY_MERGE_PROMPT),
+            HumanMessage(content=f"舊記憶：{old_content}\n新記憶：{new_content}"),
+        ]
+    )
+    merged = response.content if isinstance(response.content, str) else ""
+    return merged.strip() or new_content
 
 
 def _parse_leaked_tool_call(content: str) -> dict[str, Any] | None:
