@@ -25,6 +25,7 @@ from checkpoint_history import CHECKPOINT_DB_PATH
 from config import (
     LM_STUDIO_BASE_URL,
     LM_STUDIO_MODEL,
+    MEMORY_DEDUP_THRESHOLD,
     MEMORY_SCORE_THRESHOLD,
     MEMORY_TOP_K,
     MODEL_MAX_TOKENS,
@@ -123,7 +124,21 @@ def save_memory(content: str) -> str:
     """Persist a fact or preference about the user, recalled across all future conversations."""
     store = get_store()
     user_id = get_config()["configurable"]["user_id"]
-    store.put(memory_namespace(user_id), str(uuid4()), {"content": content})
+    namespace = memory_namespace(user_id)
+
+    # Reuse the existing entry's key when a near-duplicate is already stored, instead of
+    # letting semantically identical preferences pile up as separate UUID entries.
+    candidates = store.search(namespace, query=content, limit=1)
+    duplicate = (
+        candidates[0]
+        if candidates and candidates[0].score is not None and candidates[0].score >= MEMORY_DEDUP_THRESHOLD
+        else None
+    )
+    if duplicate:
+        store.put(namespace, duplicate.key, {"content": content})
+        return "已更新既有的相似記憶。"
+
+    store.put(namespace, str(uuid4()), {"content": content})
     return "已記住這件事。"
 
 

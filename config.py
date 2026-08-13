@@ -17,3 +17,6 @@ MEMORY_TOP_K = int(os.getenv("MEMORY_TOP_K", "5"))
 # store.search's LIMIT always fills up to MEMORY_TOP_K regardless of relevance, so this
 # cosine-similarity cutoff drops weak matches that would otherwise pollute the prompt.
 MEMORY_SCORE_THRESHOLD = float(os.getenv("MEMORY_SCORE_THRESHOLD", "0.4"))
+# Stricter than MEMORY_SCORE_THRESHOLD: only treat a new memory as a duplicate of an
+# existing one (update in place) when similarity is at least this high.
+MEMORY_DEDUP_THRESHOLD = float(os.getenv("MEMORY_DEDUP_THRESHOLD", "0.9"))
