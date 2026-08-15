@@ -1,5 +1,7 @@
 import json
 import re
+import time
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -82,8 +84,53 @@ class AgentResponse(BaseModel):
     )
 
 
+@dataclass
+class CallStat:
+    """One LLM invocation's token usage and latency, tagged by call_kind (chat/memory_merge)."""
+
+    kind: str
+    duration_seconds: float
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    total_tokens: int | None
+    attempt: int | None = None
+
+
+@dataclass
+class ToolStat:
+    """One tool invocation's latency."""
+
+    tool_name: str
+    duration_seconds: float
+
+
+def _summarize_call_stats(call_stats: list[CallStat]) -> str:
+    chat_calls = sum(1 for c in call_stats if c.kind == "chat")
+    merge_calls = sum(1 for c in call_stats if c.kind == "memory_merge")
+    llm_seconds = sum(c.duration_seconds for c in call_stats)
+    prompt_tokens = sum(c.prompt_tokens or 0 for c in call_stats)
+    completion_tokens = sum(c.completion_tokens or 0 for c in call_stats)
+    total_tokens = sum(c.total_tokens or 0 for c in call_stats)
+    return (
+        f"llm={llm_seconds:.2f}s ({chat_calls} chat + {merge_calls} memory_merge calls) | "
+        f"tokens: prompt={prompt_tokens} completion={completion_tokens} total={total_tokens}"
+    )
+
+
+def _summarize_tool_stats(tool_stats: list[ToolStat]) -> str:
+    tool_seconds = sum(t.duration_seconds for t in tool_stats)
+    return f"tool={tool_seconds:.2f}s ({len(tool_stats)} calls)"
+
+
 class LoggingCallbackHandler(BaseCallbackHandler):
-    """Hooks into the chat model / tool lifecycle to log execution events."""
+    """Hooks into the chat model / tool lifecycle to log execution events and collect Turn-level stats."""
+
+    def __init__(self) -> None:
+        self.call_stats: list[CallStat] = []
+        self.tool_stats: list[ToolStat] = []
+        # Keyed by run_id so on_*_end can match back to the corresponding on_*_start.
+        self._call_starts: dict[UUID, tuple[float, dict[str, Any]]] = {}
+        self._tool_starts: dict[UUID, tuple[float, str]] = {}
 
     def on_chat_model_start(
         self,
@@ -91,12 +138,27 @@ class LoggingCallbackHandler(BaseCallbackHandler):
         messages: list[list[BaseMessage]],
         *,
         run_id: UUID,
+        metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
         print(f"[hook] model start: {len(messages[0])} messages")
+        self._call_starts[run_id] = (time.monotonic(), metadata or {})
 
     def on_llm_end(self, response: LLMResult, *, run_id: UUID, **kwargs: Any) -> None:
         print("[hook] model end")
+        started_at, metadata = self._call_starts.pop(run_id, (None, {}))
+        duration = time.monotonic() - started_at if started_at is not None else 0.0
+        usage = (response.llm_output or {}).get("token_usage") or {}
+        self.call_stats.append(
+            CallStat(
+                kind=metadata.get("call_kind", "chat"),
+                duration_seconds=duration,
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                total_tokens=usage.get("total_tokens"),
+                attempt=metadata.get("attempt"),
+            )
+        )
 
     def on_tool_start(
         self,
@@ -108,9 +170,13 @@ class LoggingCallbackHandler(BaseCallbackHandler):
     ) -> None:
         name = serialized.get("name", "unknown")
         print(f"[hook] tool start: {name}({input_str})")
+        self._tool_starts[run_id] = (time.monotonic(), name)
 
     def on_tool_end(self, output: Any, *, run_id: UUID, **kwargs: Any) -> None:
         print(f"[hook] tool end: {output}")
+        started_at, name = self._tool_starts.pop(run_id, (None, "unknown"))
+        duration = time.monotonic() - started_at if started_at is not None else 0.0
+        self.tool_stats.append(ToolStat(tool_name=name, duration_seconds=duration))
 
 
 @tool(args_schema=GetCurrentTimeInput)
@@ -178,7 +244,10 @@ def _merge_memory_content(old_content: str, new_content: str) -> str:
         [
             SystemMessage(content=MEMORY_MERGE_PROMPT),
             HumanMessage(content=f"舊記憶：{old_content}\n新記憶：{new_content}"),
-        ]
+        ],
+        # Callbacks already reach this nested call via LangGraph's ambient config context;
+        # metadata just tags it as memory_merge so stats can tell it apart from a chat call.
+        config={"metadata": {"call_kind": "memory_merge"}},
     )
     merged = response.content if isinstance(response.content, str) else ""
     return merged.strip() or new_content
@@ -212,12 +281,18 @@ def build_graph(
     def call_model(state: MessagesState) -> dict:
         messages = state["messages"]
 
-        response = llm_with_tools.invoke(messages)
+        attempt = 1
+        response = llm_with_tools.invoke(
+            messages, config={"metadata": {"call_kind": "chat", "attempt": attempt}}
+        )
         for _ in range(MAX_MODEL_RETRIES - 1):
             content = response.content if isinstance(response.content, str) else ""
             if response.tool_calls or not LEAKED_TOOL_CALL_PATTERN.search(content):
                 break
-            response = llm_with_tools.invoke(messages)
+            attempt += 1
+            response = llm_with_tools.invoke(
+                messages, config={"metadata": {"call_kind": "chat", "attempt": attempt}}
+            )
 
         content = response.content if isinstance(response.content, str) else ""
         if not response.tool_calls and LEAKED_TOOL_CALL_PATTERN.search(content):
@@ -252,6 +327,11 @@ def main():
         ("demo-thread-3", "你知道我叫什麼名字嗎？"),
     ]
 
+    # Run-level stats accumulate across every Turn (test case) for the final summary.
+    run_call_stats: list[CallStat] = []
+    run_tool_stats: list[ToolStat] = []
+    run_seconds = 0.0
+
     # SqliteSaver persists per-thread history; SqliteStore persists per-user long-term memories.
     with (
         SqliteSaver.from_conn_string(CHECKPOINT_DB_PATH) as checkpointer,
@@ -263,9 +343,10 @@ def main():
             print(f"=== Case {idx} (thread={thread_id}) ===")
             print(f"User: {user_input}\n")
 
+            handler = LoggingCallbackHandler()
             config: RunnableConfig = {
                 "configurable": {"thread_id": thread_id, "user_id": user_id},
-                "callbacks": [LoggingCallbackHandler()],
+                "callbacks": [handler],
             }
 
             # Check persisted checkpoint state instead of an in-process set, so reruns
@@ -276,7 +357,12 @@ def main():
             if is_new_thread:
                 messages.append(SystemMessage(content=SYSTEM_PROMPT))
             messages.append(HumanMessage(content=user_input))
+
+            # Single stopwatch around the whole Turn; call_stats/tool_stats are a breakdown,
+            # not addends, since tool time can itself contain nested LLM time (e.g. memory merge).
+            turn_started_at = time.monotonic()
             result = app.invoke({"messages": messages}, config=config)
+            turn_seconds = time.monotonic() - turn_started_at
 
             used_tools = [
                 message.name
@@ -288,7 +374,23 @@ def main():
             structured = AgentResponse(answer=str(answer), used_tools=used_tools)
 
             print(f"Tools used: {structured.used_tools}")
-            print(f"Answer: {structured.answer}\n")
+            print(f"Answer: {structured.answer}")
+            print(
+                f"[stats] turn: {turn_seconds:.2f}s total | "
+                f"{_summarize_call_stats(handler.call_stats)} | "
+                f"{_summarize_tool_stats(handler.tool_stats)}\n"
+            )
+
+            run_call_stats.extend(handler.call_stats)
+            run_tool_stats.extend(handler.tool_stats)
+            run_seconds += turn_seconds
+
+        print("=== Run totals ===")
+        print(
+            f"[stats] run: {run_seconds:.2f}s total across {len(test_cases)} turns | "
+            f"{_summarize_call_stats(run_call_stats)} | "
+            f"{_summarize_tool_stats(run_tool_stats)}"
+        )
 
 
 if __name__ == "__main__":
