@@ -1,3 +1,4 @@
+import argparse
 import json
 import re
 import time
@@ -203,7 +204,9 @@ def save_memory(content: str) -> str:
     candidates = store.search(namespace, query=content, limit=1)
     duplicate = (
         candidates[0]
-        if candidates and candidates[0].score is not None and candidates[0].score >= MEMORY_DEDUP_THRESHOLD
+        if candidates
+        and candidates[0].score is not None
+        and candidates[0].score >= MEMORY_DEDUP_THRESHOLD
         else None
     )
     if duplicate:
@@ -315,22 +318,24 @@ def build_graph(
     return graph.compile(checkpointer=checkpointer, store=store)
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="LangGraph practice agent CLI")
+    parser.add_argument("--user-id", default="demo-user", help="Namespace for long-term memory")
+    parser.add_argument(
+        "--thread-id", default="demo-thread", help="Checkpointed conversation thread"
+    )
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
     llm = build_llm()
 
-    user_id = "demo-user"
-    test_cases = [
-        ("demo-thread", "現在幾點？順便幫我算 23 + 19"),
-        ("demo-thread", "我剛剛請你算的兩個數字加起來是多少？"),
-        ("demo-thread", "我喜歡喝黑咖啡，不加糖，麻煩你記住這個偏好。"),
-        ("demo-thread-2", "你知道我喜歡喝什麼咖啡嗎？"),
-        ("demo-thread-3", "你知道我叫什麼名字嗎？"),
-    ]
-
-    # Run-level stats accumulate across every Turn (test case) for the final summary.
+    # Run-level stats accumulate across every Turn for the final summary.
     run_call_stats: list[CallStat] = []
     run_tool_stats: list[ToolStat] = []
     run_seconds = 0.0
+    turn_count = 0
 
     # SqliteSaver persists per-thread history; SqliteStore persists per-user long-term memories.
     with (
@@ -338,16 +343,25 @@ def main():
         SqliteStore.from_conn_string(MEMORY_DB_PATH, index=memory_index_config()) as store,
     ):
         app = build_graph(llm, checkpointer, store)
+        base_config: RunnableConfig = {
+            "configurable": {"thread_id": args.thread_id, "user_id": args.user_id}
+        }
 
-        for idx, (thread_id, user_input) in enumerate(test_cases, start=1):
-            print(f"=== Case {idx} (thread={thread_id}) ===")
-            print(f"User: {user_input}\n")
+        print(f"=== thread={args.thread_id} user={args.user_id} (輸入 exit/quit 結束對話) ===")
+        while True:
+            try:
+                user_input = input("You: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+
+            if not user_input:
+                continue
+            if user_input.lower() in {"exit", "quit"}:
+                break
 
             handler = LoggingCallbackHandler()
-            config: RunnableConfig = {
-                "configurable": {"thread_id": thread_id, "user_id": user_id},
-                "callbacks": [handler],
-            }
+            config: RunnableConfig = {**base_config, "callbacks": [handler]}
 
             # Check persisted checkpoint state instead of an in-process set, so reruns
             # against an existing checkpoint DB don't re-inject a duplicate system prompt.
@@ -373,8 +387,9 @@ def main():
             answer = last_message.content if isinstance(last_message, AIMessage) else ""
             structured = AgentResponse(answer=str(answer), used_tools=used_tools)
 
-            print(f"Tools used: {structured.used_tools}")
-            print(f"Answer: {structured.answer}")
+            print(f"Agent: {structured.answer}")
+            if structured.used_tools:
+                print(f"Tools used: {structured.used_tools}")
             print(
                 f"[stats] turn: {turn_seconds:.2f}s total | "
                 f"{_summarize_call_stats(handler.call_stats)} | "
@@ -384,13 +399,15 @@ def main():
             run_call_stats.extend(handler.call_stats)
             run_tool_stats.extend(handler.tool_stats)
             run_seconds += turn_seconds
+            turn_count += 1
 
-        print("=== Run totals ===")
-        print(
-            f"[stats] run: {run_seconds:.2f}s total across {len(test_cases)} turns | "
-            f"{_summarize_call_stats(run_call_stats)} | "
-            f"{_summarize_tool_stats(run_tool_stats)}"
-        )
+        if turn_count:
+            print("=== Run totals ===")
+            print(
+                f"[stats] run: {run_seconds:.2f}s total across {turn_count} turns | "
+                f"{_summarize_call_stats(run_call_stats)} | "
+                f"{_summarize_tool_stats(run_tool_stats)}"
+            )
 
 
 if __name__ == "__main__":

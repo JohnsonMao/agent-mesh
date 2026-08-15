@@ -18,6 +18,7 @@ dev = [
     "ruff>=0.16.0",
     "mypy>=2.3.0",
     "poethepoet>=0.48.0",
+    "pytest>=8.4.0",
 ]
 
 [tool.ruff]
@@ -50,12 +51,23 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 warn_no_return = true
 
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests/unit"]
+markers = [
+    "integration: needs a real LM Studio server running locally (see tests/integration)",
+]
+
 [tool.poe.tasks]
 install = "uv sync"
 check = "ruff check ."
 format = "ruff format ."
-type-check = "mypy main.py"
+type-check = "mypy . --exclude '^tests/'"
 lint = ["check", "type-check"]
 fix = ["_ruff-fix", "format"]
 _ruff-fix = "ruff check . --fix"
 dev = "python main.py"
+demo = "python demo.py"
+test = "pytest tests/unit"
+test-integration = "pytest tests/integration -m integration"
+test-all = ["test", "test-integration"]
