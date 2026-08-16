@@ -51,7 +51,6 @@ MEMORY_MERGE_PROMPT = (
 LEAKED_TOOL_CALL_PATTERN = re.compile(r"<\|?tool_call\|?>")
 # e.g. "<|tool_call>call:add_numbers{a:23,b:19}" -> name="add_numbers", args="a:23,b:19"
 LEAKED_TOOL_CALL_DETAIL_PATTERN = re.compile(r"call:(?P<name>\w+)\{(?P<args>[^}]*)\}")
-MAX_MODEL_RETRIES = 3
 
 
 class GetCurrentTimeInput(BaseModel):
@@ -94,7 +93,6 @@ class CallStat:
     prompt_tokens: int | None
     completion_tokens: int | None
     total_tokens: int | None
-    attempt: int | None = None
 
 
 @dataclass
@@ -157,7 +155,6 @@ class LoggingCallbackHandler(BaseCallbackHandler):
                 prompt_tokens=usage.get("prompt_tokens"),
                 completion_tokens=usage.get("completion_tokens"),
                 total_tokens=usage.get("total_tokens"),
-                attempt=metadata.get("attempt"),
             )
         )
 
@@ -281,21 +278,9 @@ def build_graph(
     tools = [get_current_time, add_numbers, save_memory, recall_memory]
     llm_with_tools = llm.bind_tools(tools)
 
-    def call_model(state: MessagesState) -> dict:
+    def call_model(state: MessagesState) -> MessagesState:
         messages = state["messages"]
-
-        attempt = 1
-        response = llm_with_tools.invoke(
-            messages, config={"metadata": {"call_kind": "chat", "attempt": attempt}}
-        )
-        for _ in range(MAX_MODEL_RETRIES - 1):
-            content = response.content if isinstance(response.content, str) else ""
-            if response.tool_calls or not LEAKED_TOOL_CALL_PATTERN.search(content):
-                break
-            attempt += 1
-            response = llm_with_tools.invoke(
-                messages, config={"metadata": {"call_kind": "chat", "attempt": attempt}}
-            )
+        response = llm_with_tools.invoke(messages, config={"metadata": {"call_kind": "chat"}})
 
         content = response.content if isinstance(response.content, str) else ""
         if not response.tool_calls and LEAKED_TOOL_CALL_PATTERN.search(content):
