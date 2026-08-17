@@ -37,6 +37,7 @@ from config import (
 from long_term_memory import MEMORY_DB_PATH, memory_index_config, memory_namespace
 
 SYSTEM_PROMPT = (
+    "You are an AI assistant with tool-calling capabilities. When you need to use a tool, output ONLY the valid JSON tool call format specified by the API. DO NOT output any XML tags, do not use '<|think|>' tags, and do not wrap your response in markdown prose explaining the tool call."
     "請一律使用繁體中文回答，不要夾雜其他語言。"
     "若需要知道使用者過去提過的偏好或事實，可呼叫 recall_memory 工具查詢，不要憑空假設。"
 )
@@ -235,6 +236,7 @@ def build_llm() -> BaseChatModel:
         api_key="lm-studio",
         temperature=MODEL_TEMPERATURE,
         max_tokens=MODEL_MAX_TOKENS,
+        extra_body={"thinking": {"type": "disabled"}},
     )
 
 
