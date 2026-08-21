@@ -1,6 +1,6 @@
 """Unit tests for the Turn/Run-level stat summarizers."""
 
-from main import CallStat, ToolStat, _summarize_call_stats, _summarize_tool_stats
+from stats import CallStat, ToolStat, summarize_call_stats, summarize_tool_stats
 
 
 def test_summarize_call_stats_aggregates_counts_tokens_and_duration():
@@ -21,7 +21,7 @@ def test_summarize_call_stats_aggregates_counts_tokens_and_duration():
         ),
     ]
 
-    summary = _summarize_call_stats(stats)
+    summary = summarize_call_stats(stats)
 
     assert "llm=1.50s (1 chat + 1 memory_merge calls)" in summary
     assert "prompt=13 completion=7 total=20" in summary
@@ -38,7 +38,7 @@ def test_summarize_call_stats_treats_missing_token_usage_as_zero():
         )
     ]
 
-    summary = _summarize_call_stats(stats)
+    summary = summarize_call_stats(stats)
 
     assert "prompt=0 completion=0 total=0" in summary
 
@@ -49,4 +49,4 @@ def test_summarize_tool_stats_aggregates_duration_and_count():
         ToolStat(tool_name="recall_memory", duration_seconds=0.2),
     ]
 
-    assert _summarize_tool_stats(stats) == "tool=0.30s (2 calls)"
+    assert summarize_tool_stats(stats) == "tool=0.30s (2 calls)"

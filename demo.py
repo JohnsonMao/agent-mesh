@@ -13,17 +13,15 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.store.sqlite import SqliteStore
 
 from checkpoint_history import CHECKPOINT_DB_PATH
+from llm import build_llm
 from long_term_memory import MEMORY_DB_PATH, memory_index_config
-from main import (
-    SYSTEM_PROMPT,
-    AgentResponse,
+from main import SYSTEM_PROMPT, AgentResponse, build_graph
+from stats import (
     CallStat,
     LoggingCallbackHandler,
     ToolStat,
-    _summarize_call_stats,
-    _summarize_tool_stats,
-    build_graph,
-    build_llm,
+    summarize_call_stats,
+    summarize_tool_stats,
 )
 
 DEMO_USER_ID = "demo-user"
@@ -95,8 +93,8 @@ def main() -> None:
                 print(f"Answer: {structured.answer}")
                 print(
                     f"[stats] turn: {turn_seconds:.2f}s total | "
-                    f"{_summarize_call_stats(handler.call_stats)} | "
-                    f"{_summarize_tool_stats(handler.tool_stats)}\n"
+                    f"{summarize_call_stats(handler.call_stats)} | "
+                    f"{summarize_tool_stats(handler.tool_stats)}\n"
                 )
 
                 run_call_stats.extend(handler.call_stats)
@@ -106,8 +104,8 @@ def main() -> None:
             print("=== Run totals ===")
             print(
                 f"[stats] run: {run_seconds:.2f}s total across {len(DEMO_CONVERSATIONS)} turns | "
-                f"{_summarize_call_stats(run_call_stats)} | "
-                f"{_summarize_tool_stats(run_tool_stats)}"
+                f"{summarize_call_stats(run_call_stats)} | "
+                f"{summarize_tool_stats(run_tool_stats)}"
             )
     finally:
         # Clean up the demo's sqlite files once connections are closed, so each `poe demo`

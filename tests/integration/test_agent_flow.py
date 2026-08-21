@@ -11,6 +11,8 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.store.sqlite import SqliteStore
 
 import main
+from llm import build_llm
+from long_term_memory import memory_index_config
 
 pytestmark = pytest.mark.integration
 
@@ -28,10 +30,10 @@ def _used_tools(result: dict) -> list[str]:
 
 
 def test_agent_uses_add_numbers_tool_for_an_arithmetic_request():
-    llm = main.build_llm()
+    llm = build_llm()
     with (
         SqliteSaver.from_conn_string(":memory:") as checkpointer,
-        SqliteStore.from_conn_string(":memory:", index=main.memory_index_config()) as store,
+        SqliteStore.from_conn_string(":memory:", index=memory_index_config()) as store,
     ):
         app = main.build_graph(llm, checkpointer, store)
         config = {"configurable": {"thread_id": "it-arithmetic", "user_id": "it-user"}}
@@ -45,10 +47,10 @@ def test_agent_uses_add_numbers_tool_for_an_arithmetic_request():
 
 
 def test_agent_uses_recall_memory_tool_for_an_unknown_fact():
-    llm = main.build_llm()
+    llm = build_llm()
     with (
         SqliteSaver.from_conn_string(":memory:") as checkpointer,
-        SqliteStore.from_conn_string(":memory:", index=main.memory_index_config()) as store,
+        SqliteStore.from_conn_string(":memory:", index=memory_index_config()) as store,
     ):
         app = main.build_graph(llm, checkpointer, store)
         config = {"configurable": {"thread_id": "it-unknown-fact", "user_id": "it-user-fresh"}}
@@ -62,11 +64,11 @@ def test_agent_uses_recall_memory_tool_for_an_unknown_fact():
 
 
 def test_agent_recalls_a_saved_preference_in_a_different_thread():
-    llm = main.build_llm()
+    llm = build_llm()
     user_id = "it-user-memory"
     with (
         SqliteSaver.from_conn_string(":memory:") as checkpointer,
-        SqliteStore.from_conn_string(":memory:", index=main.memory_index_config()) as store,
+        SqliteStore.from_conn_string(":memory:", index=memory_index_config()) as store,
     ):
         app = main.build_graph(llm, checkpointer, store)
         save_config = {"configurable": {"thread_id": "it-memory-save", "user_id": user_id}}

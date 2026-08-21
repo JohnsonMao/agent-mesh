@@ -1,6 +1,6 @@
 """Unit tests for _merge_memory_content's dedup-merge LLM call."""
 
-import main
+import tools
 
 
 class _FakeResponse:
@@ -17,16 +17,16 @@ class _FakeMergeLLM:
 
 
 def test_merge_memory_content_returns_stripped_llm_output(monkeypatch):
-    monkeypatch.setattr(main, "build_llm", lambda: _FakeMergeLLM("  喜歡喝黑咖啡，不加糖  "))
+    monkeypatch.setattr(tools, "build_llm", lambda: _FakeMergeLLM("  喜歡喝黑咖啡，不加糖  "))
 
-    merged = main._merge_memory_content("喜歡喝咖啡", "不加糖")
+    merged = tools._merge_memory_content("喜歡喝咖啡", "不加糖")
 
     assert merged == "喜歡喝黑咖啡，不加糖"
 
 
 def test_merge_memory_content_falls_back_to_new_content_when_llm_output_is_blank(monkeypatch):
-    monkeypatch.setattr(main, "build_llm", lambda: _FakeMergeLLM("   "))
+    monkeypatch.setattr(tools, "build_llm", lambda: _FakeMergeLLM("   "))
 
-    merged = main._merge_memory_content("舊記憶", "新記憶")
+    merged = tools._merge_memory_content("舊記憶", "新記憶")
 
     assert merged == "新記憶"

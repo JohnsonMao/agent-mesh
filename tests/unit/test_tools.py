@@ -2,26 +2,26 @@
 
 from datetime import datetime
 
-import main
+import tools
 from tests.unit.conftest import FakeMemoryItem, FakeStore, fake_config
 
 
 def test_get_current_time_returns_parseable_timestamp():
-    result = main.get_current_time.func()
+    result = tools.get_current_time.func()
 
     datetime.strptime(result, "%Y-%m-%d %H:%M:%S")  # raises ValueError if malformed
 
 
 def test_add_numbers_returns_sum():
-    assert main.add_numbers.func(23, 19) == 42
+    assert tools.add_numbers.func(23, 19) == 42
 
 
 def test_save_memory_stores_new_entry_when_no_similar_memory(monkeypatch):
     store = FakeStore(search_results=[])
-    monkeypatch.setattr(main, "get_store", lambda: store)
-    monkeypatch.setattr(main, "get_config", lambda: fake_config())
+    monkeypatch.setattr(tools, "get_store", lambda: store)
+    monkeypatch.setattr(tools, "get_config", lambda: fake_config())
 
-    result = main.save_memory.func("喜歡喝黑咖啡，不加糖")
+    result = tools.save_memory.func("喜歡喝黑咖啡，不加糖")
 
     assert result == "已記住這件事。"
     assert len(store.put_calls) == 1
@@ -33,11 +33,11 @@ def test_save_memory_stores_new_entry_when_no_similar_memory(monkeypatch):
 def test_save_memory_merges_near_duplicate(monkeypatch):
     existing = FakeMemoryItem(key="abc", value={"content": "喜歡喝拿鐵"}, score=0.95)
     store = FakeStore(search_results=[existing])
-    monkeypatch.setattr(main, "get_store", lambda: store)
-    monkeypatch.setattr(main, "get_config", lambda: fake_config())
-    monkeypatch.setattr(main, "_merge_memory_content", lambda old, new: "合併後的內容")
+    monkeypatch.setattr(tools, "get_store", lambda: store)
+    monkeypatch.setattr(tools, "get_config", lambda: fake_config())
+    monkeypatch.setattr(tools, "_merge_memory_content", lambda old, new: "合併後的內容")
 
-    result = main.save_memory.func("喜歡喝黑咖啡不加糖")
+    result = tools.save_memory.func("喜歡喝黑咖啡不加糖")
 
     assert result == "已合併既有的相似記憶。"
     assert store.put_calls == [(("u1", "memories"), "abc", {"content": "合併後的內容"})]
@@ -46,10 +46,10 @@ def test_save_memory_merges_near_duplicate(monkeypatch):
 def test_save_memory_ignores_weak_match_and_stores_new_entry(monkeypatch):
     weak_match = FakeMemoryItem(key="abc", value={"content": "喜歡喝拿鐵"}, score=0.5)
     store = FakeStore(search_results=[weak_match])
-    monkeypatch.setattr(main, "get_store", lambda: store)
-    monkeypatch.setattr(main, "get_config", lambda: fake_config())
+    monkeypatch.setattr(tools, "get_store", lambda: store)
+    monkeypatch.setattr(tools, "get_config", lambda: fake_config())
 
-    result = main.save_memory.func("喜歡養貓")
+    result = tools.save_memory.func("喜歡養貓")
 
     assert result == "已記住這件事。"
     assert len(store.put_calls) == 1
@@ -63,19 +63,19 @@ def test_recall_memory_returns_relevant_items_above_threshold(monkeypatch):
         FakeMemoryItem(key="2", value={"content": "不相關的記憶"}, score=0.1),
     ]
     store = FakeStore(search_results=items)
-    monkeypatch.setattr(main, "get_store", lambda: store)
-    monkeypatch.setattr(main, "get_config", lambda: fake_config())
+    monkeypatch.setattr(tools, "get_store", lambda: store)
+    monkeypatch.setattr(tools, "get_config", lambda: fake_config())
 
-    result = main.recall_memory.func("咖啡偏好")
+    result = tools.recall_memory.func("咖啡偏好")
 
     assert result == "- 喜歡黑咖啡"
 
 
 def test_recall_memory_returns_fallback_message_when_nothing_relevant(monkeypatch):
     store = FakeStore(search_results=[])
-    monkeypatch.setattr(main, "get_store", lambda: store)
-    monkeypatch.setattr(main, "get_config", lambda: fake_config())
+    monkeypatch.setattr(tools, "get_store", lambda: store)
+    monkeypatch.setattr(tools, "get_config", lambda: fake_config())
 
-    result = main.recall_memory.func("任何東西")
+    result = tools.recall_memory.func("任何東西")
 
     assert result == "沒有找到相關記憶。"

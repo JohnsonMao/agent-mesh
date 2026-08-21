@@ -7,7 +7,8 @@ Usage:
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 
-from main import build_graph, build_llm
+from llm import build_llm
+from main import build_graph
 
 OUTPUT_PNG_PATH = "data/graph.png"
 
