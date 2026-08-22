@@ -19,9 +19,7 @@ def test_add_numbers_returns_sum():
 def test_save_memory_stores_new_entry_when_no_similar_memory(monkeypatch):
     store = FakeStore(search_results=[])
 
-    result = tools.save_memory.func(
-        "喜歡喝黑咖啡，不加糖", runtime=fake_tool_runtime(store)
-    )
+    result = tools.save_memory.func("喜歡喝黑咖啡，不加糖", runtime=fake_tool_runtime(store))
 
     assert result == "已記住這件事。"
     assert len(store.put_calls) == 1
@@ -35,9 +33,7 @@ def test_save_memory_merges_near_duplicate(monkeypatch):
     store = FakeStore(search_results=[existing])
     monkeypatch.setattr(tools, "_merge_memory_content", lambda old, new: "合併後的內容")
 
-    result = tools.save_memory.func(
-        "喜歡喝黑咖啡不加糖", runtime=fake_tool_runtime(store)
-    )
+    result = tools.save_memory.func("喜歡喝黑咖啡不加糖", runtime=fake_tool_runtime(store))
 
     assert result == "已合併既有的相似記憶。"
     assert store.put_calls == [(("u1", "memories"), "abc", {"content": "合併後的內容"})]

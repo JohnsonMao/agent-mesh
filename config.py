@@ -12,6 +12,7 @@ LM_STUDIO_EMBEDDING_MODEL = os.getenv("LM_STUDIO_EMBEDDING_MODEL", "bge-m3")
 
 MODEL_TEMPERATURE = float(os.getenv("MODEL_TEMPERATURE", "0.2"))
 MODEL_MAX_TOKENS = int(os.getenv("MODEL_MAX_TOKENS", "1024"))
+MODEL_REASONING_EFFORT = os.getenv("MODEL_REASONING_EFFORT", "none")
 
 MEMORY_TOP_K = int(os.getenv("MEMORY_TOP_K", "5"))
 # store.search's LIMIT always fills up to MEMORY_TOP_K regardless of relevance, so this

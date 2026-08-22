@@ -112,9 +112,7 @@ def main():
         SqliteStore.from_conn_string(MEMORY_DB_PATH, index=memory_index_config()) as store,
     ):
         app = build_graph(llm, checkpointer, store)
-        base_config: RunnableConfig = {
-            "configurable": {"thread_id": args.thread_id}
-        }
+        base_config: RunnableConfig = {"configurable": {"thread_id": args.thread_id}}
         context = build_agent_context(args.user_id)
 
         print(f"=== thread={args.thread_id} user={args.user_id} (輸入 exit/quit 結束對話) ===")
