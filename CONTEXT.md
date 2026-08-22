@@ -15,3 +15,6 @@ _Avoid_: case、回合（除非上下文已明確）。`tests/` 底下 pytest �
 **Run**：
 `main()` 執行一次的生命週期，橫跨多個 Turn（可能分屬不同 Thread）。是統計資料全域總計的聚合單位。
 _Avoid_: session、執行
+
+**Context**：
+一次 graph invocation 的外部執行脈絡，提供該次處理所需、但不屬於對話訊息歷史的身份或環境資料。Context 不會隨 Turn 演進，也不應被 checkpoint 持久化。本專案的 `user_id` 屬於 Context；`thread_id` 是 Thread 的識別值。

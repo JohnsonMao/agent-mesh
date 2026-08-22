@@ -7,7 +7,7 @@ for quickly eyeballing model/tool-call behavior locally. Needs a real LM Studio 
 import time
 from pathlib import Path
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.store.sqlite import SqliteStore
@@ -15,7 +15,7 @@ from langgraph.store.sqlite import SqliteStore
 from checkpoint_history import CHECKPOINT_DB_PATH
 from llm import build_llm
 from long_term_memory import MEMORY_DB_PATH, memory_index_config
-from main import SYSTEM_PROMPT, AgentResponse, build_graph
+from main import SYSTEM_PROMPT, AgentResponse, build_agent_context, build_graph
 from stats import (
     CallStat,
     LoggingCallbackHandler,
@@ -63,21 +63,22 @@ def main() -> None:
 
                 handler = LoggingCallbackHandler()
                 config: RunnableConfig = {
-                    "configurable": {"thread_id": thread_id, "user_id": DEMO_USER_ID},
+                    "configurable": {"thread_id": thread_id},
                     "callbacks": [handler],
                 }
+                context = build_agent_context(DEMO_USER_ID)
 
                 # Check persisted checkpoint state instead of an in-process set, so reruns
                 # against an existing checkpoint DB don't re-inject a duplicate system prompt.
                 is_new_thread = not app.get_state(config).values.get("messages")
 
-                messages: list[BaseMessage] = []
+                messages: list[AnyMessage] = []
                 if is_new_thread:
                     messages.append(SystemMessage(content=SYSTEM_PROMPT))
                 messages.append(HumanMessage(content=user_input))
 
                 turn_started_at = time.monotonic()
-                result = app.invoke({"messages": messages}, config=config)
+                result = app.invoke({"messages": messages}, config=config, context=context)
                 turn_seconds = time.monotonic() - turn_started_at
 
                 used_tools = [

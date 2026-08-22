@@ -1,9 +1,10 @@
 import argparse
 import time
+from typing import TypedDict
 from uuid import uuid4
 
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -45,9 +46,19 @@ class AgentResponse(BaseModel):
     )
 
 
+class AgentContext(TypedDict):
+    user_id: str
+
+
+def build_agent_context(user_id: str) -> AgentContext:
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise ValueError("user_id must be a non-empty string")
+    return {"user_id": user_id}
+
+
 def build_graph(
     llm: BaseChatModel, checkpointer: BaseCheckpointSaver, store: BaseStore
-) -> CompiledStateGraph:
+) -> CompiledStateGraph[MessagesState, AgentContext, MessagesState, MessagesState]:
     tools = [get_current_time, add_numbers, save_memory, recall_memory]
     llm_with_tools = llm.bind_tools(tools)
 
@@ -65,7 +76,7 @@ def build_graph(
                 )
         return {"messages": [response]}
 
-    graph = StateGraph(MessagesState)
+    graph = StateGraph(MessagesState, context_schema=AgentContext)
     graph.add_node("model", call_model)
     graph.add_node("tools", ToolNode(tools))
 
@@ -102,8 +113,9 @@ def main():
     ):
         app = build_graph(llm, checkpointer, store)
         base_config: RunnableConfig = {
-            "configurable": {"thread_id": args.thread_id, "user_id": args.user_id}
+            "configurable": {"thread_id": args.thread_id}
         }
+        context = build_agent_context(args.user_id)
 
         print(f"=== thread={args.thread_id} user={args.user_id} (輸入 exit/quit 結束對話) ===")
         while True:
@@ -125,7 +137,7 @@ def main():
             # against an existing checkpoint DB don't re-inject a duplicate system prompt.
             is_new_thread = not app.get_state(config).values.get("messages")
 
-            messages: list[BaseMessage] = []
+            messages: list[AnyMessage] = []
             if is_new_thread:
                 messages.append(SystemMessage(content=SYSTEM_PROMPT))
             messages.append(HumanMessage(content=user_input))
@@ -133,7 +145,7 @@ def main():
             # Single stopwatch around the whole Turn; call_stats/tool_stats are a breakdown,
             # not addends, since tool time can itself contain nested LLM time (e.g. memory merge).
             turn_started_at = time.monotonic()
-            result = app.invoke({"messages": messages}, config=config)
+            result = app.invoke({"messages": messages}, config=config, context=context)
             turn_seconds = time.monotonic() - turn_started_at
 
             used_tools = [

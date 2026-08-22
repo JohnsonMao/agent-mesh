@@ -17,12 +17,12 @@ from long_term_memory import memory_index_config
 pytestmark = pytest.mark.integration
 
 
-def _send(app, config, *, is_new_thread: bool, user_input: str) -> dict:
+def _send(app, config, context, *, is_new_thread: bool, user_input: str) -> dict:
     messages = []
     if is_new_thread:
         messages.append(SystemMessage(content=main.SYSTEM_PROMPT))
     messages.append(HumanMessage(content=user_input))
-    return app.invoke({"messages": messages}, config=config)
+    return app.invoke({"messages": messages}, config=config, context=context)
 
 
 def _used_tools(result: dict) -> list[str]:
@@ -36,9 +36,12 @@ def test_agent_uses_add_numbers_tool_for_an_arithmetic_request():
         SqliteStore.from_conn_string(":memory:", index=memory_index_config()) as store,
     ):
         app = main.build_graph(llm, checkpointer, store)
-        config = {"configurable": {"thread_id": "it-arithmetic", "user_id": "it-user"}}
+        config = {"configurable": {"thread_id": "it-arithmetic"}}
+        context = {"user_id": "it-user"}
 
-        result = _send(app, config, is_new_thread=True, user_input="現在幾點？順便幫我算 23 + 19")
+        result = _send(
+            app, config, context, is_new_thread=True, user_input="現在幾點？順便幫我算 23 + 19"
+        )
 
         assert "add_numbers" in _used_tools(result)
         final = result["messages"][-1]
@@ -53,9 +56,12 @@ def test_agent_uses_recall_memory_tool_for_an_unknown_fact():
         SqliteStore.from_conn_string(":memory:", index=memory_index_config()) as store,
     ):
         app = main.build_graph(llm, checkpointer, store)
-        config = {"configurable": {"thread_id": "it-unknown-fact", "user_id": "it-user-fresh"}}
+        config = {"configurable": {"thread_id": "it-unknown-fact"}}
+        context = {"user_id": "it-user-fresh"}
 
-        result = _send(app, config, is_new_thread=True, user_input="你知道我叫什麼名字嗎？")
+        result = _send(
+            app, config, context, is_new_thread=True, user_input="你知道我叫什麼名字嗎？"
+        )
 
         assert "recall_memory" in _used_tools(result)
         final = result["messages"][-1]
@@ -71,19 +77,21 @@ def test_agent_recalls_a_saved_preference_in_a_different_thread():
         SqliteStore.from_conn_string(":memory:", index=memory_index_config()) as store,
     ):
         app = main.build_graph(llm, checkpointer, store)
-        save_config = {"configurable": {"thread_id": "it-memory-save", "user_id": user_id}}
-        recall_config = {"configurable": {"thread_id": "it-memory-recall", "user_id": user_id}}
+        save_config = {"configurable": {"thread_id": "it-memory-save"}}
+        recall_config = {"configurable": {"thread_id": "it-memory-recall"}}
+        context = {"user_id": user_id}
 
         save_result = _send(
             app,
             save_config,
+            context,
             is_new_thread=True,
             user_input="我喜歡喝黑咖啡，不加糖，麻煩你記住這個偏好。",
         )
         assert "save_memory" in _used_tools(save_result)
 
         recall_result = _send(
-            app, recall_config, is_new_thread=True, user_input="你知道我喜歡喝什麼咖啡嗎？"
+            app, recall_config, context, is_new_thread=True, user_input="你知道我喜歡喝什麼咖啡嗎？"
         )
 
         # Loose per Q8: only require the recall path was exercised and produced *some* answer,

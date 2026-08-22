@@ -1,9 +1,11 @@
 """Shared fixtures/fakes for unit tests that must not touch a real LM Studio server."""
 
 from contextlib import contextmanager
+from typing import Any
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.prebuilt import ToolRuntime
 from langgraph.store.sqlite import SqliteStore
 
 import main
@@ -39,8 +41,15 @@ class FakeStore:
         self.put_calls.append((namespace, key, value))
 
 
-def fake_config(user_id: str = "u1") -> dict:
-    return {"configurable": {"user_id": user_id}}
+def fake_tool_runtime(store: Any, user_id: str = "u1") -> ToolRuntime:
+    return ToolRuntime(
+        state={},
+        context={"user_id": user_id},
+        config={},
+        stream_writer=lambda _: None,
+        tool_call_id=None,
+        store=store,
+    )
 
 
 @contextmanager

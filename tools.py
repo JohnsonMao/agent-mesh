@@ -1,11 +1,12 @@
 """Tool definitions available to the agent."""
 
 from datetime import datetime
+from typing import Any
 from uuid import uuid4
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
-from langgraph.config import get_config, get_store
+from langgraph.prebuilt import ToolRuntime
 from pydantic import BaseModel, Field
 
 from config import MEMORY_DEDUP_THRESHOLD, MEMORY_SCORE_THRESHOLD, MEMORY_TOP_K
@@ -67,10 +68,12 @@ def _merge_memory_content(old_content: str, new_content: str) -> str:
 
 
 @tool(args_schema=SaveMemoryInput)
-def save_memory(content: str) -> str:
+def save_memory(content: str, runtime: ToolRuntime[Any, Any]) -> str:
     """Persist a fact or preference about the user, recalled across all future conversations."""
-    store = get_store()
-    user_id = get_config()["configurable"]["user_id"]
+    store = runtime.store
+    if store is None:
+        raise RuntimeError("memory store is not configured")
+    user_id = runtime.context["user_id"]
     namespace = memory_namespace(user_id)
 
     # Reuse the existing entry's key when a near-duplicate is already stored, instead of
@@ -93,10 +96,12 @@ def save_memory(content: str) -> str:
 
 
 @tool(args_schema=RecallMemoryInput)
-def recall_memory(query: str) -> str:
+def recall_memory(query: str, runtime: ToolRuntime[Any, Any]) -> str:
     """Search the user's saved long-term facts/preferences relevant to the given query."""
-    store = get_store()
-    user_id = get_config()["configurable"]["user_id"]
+    store = runtime.store
+    if store is None:
+        raise RuntimeError("memory store is not configured")
+    user_id = runtime.context["user_id"]
     memories = store.search(memory_namespace(user_id), query=query, limit=MEMORY_TOP_K)
     relevant = [m for m in memories if m.score is None or m.score >= MEMORY_SCORE_THRESHOLD]
     if not relevant:
