@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from checkpoint_history import CHECKPOINT_DB_PATH
 from leaked_tool_call import LEAKED_TOOL_CALL_PATTERN, parse_leaked_tool_call
+from learner_profile import delete_profile, get_profile, update_profile
 from llm import build_llm
 from long_term_memory import MEMORY_DB_PATH, memory_index_config
 from stats import (
@@ -59,7 +60,15 @@ def build_agent_context(user_id: str) -> AgentContext:
 def build_graph(
     llm: BaseChatModel, checkpointer: BaseCheckpointSaver, store: BaseStore
 ) -> CompiledStateGraph[MessagesState, AgentContext, MessagesState, MessagesState]:
-    tools = [get_current_time, add_numbers, save_memory, recall_memory]
+    tools = [
+        get_current_time,
+        add_numbers,
+        save_memory,
+        recall_memory,
+        get_profile,
+        update_profile,
+        delete_profile,
+    ]
     llm_with_tools = llm.bind_tools(tools)
 
     def call_model(state: MessagesState) -> MessagesState:
