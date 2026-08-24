@@ -26,3 +26,4 @@ data/
 # IDE
 .vscode/
 .idea/
+.scratch/
