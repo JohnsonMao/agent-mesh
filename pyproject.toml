@@ -35,11 +35,15 @@ select = [
     "N",      # pep8-naming
     "UP",     # pyupgrade
     "B",      # flake8-bugbear
+    "ANN401", # disallow explicit `Any` in type annotations
 ]
 ignore = ["E501"]  # line too long
 
 [tool.ruff.lint.isort]
 known-third-party = ["langchain", "langgraph", "pydantic", "dotenv"]
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = true  # **kwargs: Any is fine when overriding library callback hooks
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]

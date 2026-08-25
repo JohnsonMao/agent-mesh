@@ -30,7 +30,12 @@ class LoggingCallbackHandler(BaseCallbackHandler):
     _tool_starts: dict[UUID, tuple[str, float]] = field(default_factory=dict)
 
     def on_chat_model_start(
-        self, serialized: dict[str, Any], messages: Any, *, run_id: UUID, **kwargs: Any
+        self,
+        serialized: dict[str, Any],
+        messages: Any,  # noqa: ANN401 -- must match BaseCallbackHandler's signature
+        *,
+        run_id: UUID,
+        **kwargs: Any,
     ) -> None:
         self._llm_starts[run_id] = time.monotonic()
 
@@ -52,7 +57,13 @@ class LoggingCallbackHandler(BaseCallbackHandler):
         tool_name = serialized.get("name", "unknown")
         self._tool_starts[run_id] = (tool_name, time.monotonic())
 
-    def on_tool_end(self, output: Any, *, run_id: UUID, **kwargs: Any) -> None:
+    def on_tool_end(
+        self,
+        output: Any,  # noqa: ANN401 -- matches base signature
+        *,
+        run_id: UUID,
+        **kwargs: Any,
+    ) -> None:
         started = self._tool_starts.pop(run_id, None)
         if started is None:
             return

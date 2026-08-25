@@ -1,23 +1,24 @@
 """Graph assembly and CLI entrypoint for the Assistant."""
 
 import sqlite3
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
 
+from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_core.runnables import RunnableConfig
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import StateGraph
 from langgraph.graph.message import MessagesState
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.store.base import BaseStore
 
-from config import load_settings
+from config import Settings, load_settings
 from llm import build_llm
 from long_term_memory import build_store
 from stats import LoggingCallbackHandler, summarize_call_stats, summarize_tool_stats
@@ -36,7 +37,9 @@ SYSTEM_PROMPT = (
 )
 
 
-def call_model(llm_with_tools: Any) -> Callable[[MessagesState, RunnableConfig], MessagesState]:
+def call_model(
+    llm_with_tools: Runnable[LanguageModelInput, AIMessage],
+) -> Callable[[MessagesState, RunnableConfig], MessagesState]:
     def _call_model(state: MessagesState, config: RunnableConfig) -> MessagesState:
         messages = [SystemMessage(content=SYSTEM_PROMPT), *state["messages"]]
         response = llm_with_tools.invoke(messages, config)
@@ -50,7 +53,7 @@ def build_graph(
     tools: list[BaseTool],
     checkpointer: BaseCheckpointSaver,
     store: BaseStore,
-) -> Any:
+) -> CompiledStateGraph:
     llm_with_tools = llm.bind_tools(tools)
     graph = StateGraph(MessagesState)
     graph.add_node("model", call_model(llm_with_tools))  # type: ignore[call-overload]
@@ -62,7 +65,7 @@ def build_graph(
 
 
 @contextmanager
-def open_store(settings: Any) -> Iterator[BaseStore]:
+def open_store(settings: Settings) -> Generator[BaseStore]:
     conn = sqlite3.connect("data/memory_store.sqlite", check_same_thread=False)
     try:
         yield build_store(conn, settings)

@@ -1,11 +1,13 @@
 """Shared fixtures for unit tests: fake chat model, fake embeddings, test graph builder."""
 
 import hashlib
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
+from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import IndexConfig
@@ -19,7 +21,11 @@ from tools import make_tools
 class FakeToolChatModel(GenericFakeChatModel):
     """A scripted chat model that supports bind_tools (a no-op passthrough)."""
 
-    def bind_tools(self, tools: Any, **kwargs: Any) -> "FakeToolChatModel":
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any] | type | Callable[..., Any] | BaseTool],
+        **kwargs: Any,
+    ) -> "FakeToolChatModel":
         return self
 
 

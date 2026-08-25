@@ -1,14 +1,13 @@
 """Secondary seam: the save_memory tool's dedup/merge decision at the function boundary."""
 
-from typing import Any
-
 from conftest import build_test_settings, build_test_store
+from pytest import MonkeyPatch
 
 import tools
 from long_term_memory import memory_namespace
 
 
-def test_save_memory_merges_a_near_duplicate_fact(monkeypatch: Any) -> None:
+def test_save_memory_merges_a_near_duplicate_fact(monkeypatch: MonkeyPatch) -> None:
     settings = build_test_settings()
     store = build_test_store()
     namespace = memory_namespace("test-user")
@@ -29,7 +28,7 @@ def test_save_memory_merges_a_near_duplicate_fact(monkeypatch: Any) -> None:
     assert items[0].value["content"] == "User loves tea (merged)"
 
 
-def test_save_memory_keeps_unrelated_facts_separate(monkeypatch: Any) -> None:
+def test_save_memory_keeps_unrelated_facts_separate(monkeypatch: MonkeyPatch) -> None:
     settings = build_test_settings()
     store = build_test_store()
     namespace = memory_namespace("test-user")
