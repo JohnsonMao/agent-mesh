@@ -22,7 +22,7 @@ class ToolStat:
     duration_seconds: float
 
 
-@dataclass
+@dataclass(eq=False)
 class LoggingCallbackHandler(BaseCallbackHandler):
     call_stats: list[CallStat] = field(default_factory=list)
     tool_stats: list[ToolStat] = field(default_factory=list)
