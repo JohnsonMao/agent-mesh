@@ -3,6 +3,7 @@
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -70,6 +71,7 @@ def open_store(settings: Any) -> Iterator[BaseStore]:
 
 
 def main() -> None:
+    Path("data").mkdir(parents=True, exist_ok=True)
     settings = load_settings()
     llm = build_llm(settings)
     tools = make_tools(settings)
