@@ -50,6 +50,7 @@ class FakeEmbeddings(Embeddings):
 
 def build_test_settings(**overrides: Any) -> Settings:
     defaults: dict[str, Any] = {
+        "model_provider": "openai",
         "lm_studio_base_url": "http://localhost:1234/v1",
         "lm_studio_model": "test-model",
         "lm_studio_embedding_model": "test-embedding",

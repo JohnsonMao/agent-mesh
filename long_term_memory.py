@@ -15,9 +15,13 @@ def memory_namespace(user_id: str) -> tuple[str, str]:
 
 def memory_index_config(settings: Settings) -> SqliteIndexConfig:
     embeddings = init_embeddings(
-        f"openai:{settings.lm_studio_embedding_model}",
+        model=settings.lm_studio_embedding_model,
+        provider=settings.model_provider,
         base_url=settings.lm_studio_base_url,
         api_key="lm-studio",
+        # LM Studio's embeddings endpoint rejects tiktoken-tokenized array input;
+        # send raw strings instead.
+        check_embedding_ctx_length=False,
     )
     return SqliteIndexConfig(dims=1024, embed=embeddings, fields=["content"])
 

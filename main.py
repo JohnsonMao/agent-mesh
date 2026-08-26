@@ -66,7 +66,14 @@ def build_graph(
 
 @contextmanager
 def open_store(settings: Settings) -> Generator[BaseStore]:
-    conn = sqlite3.connect("data/memory_store.sqlite", check_same_thread=False)
+    # LangGraph's SqliteStore starts its own transaction via BEGIN/COMMIT inside
+    # the store methods; the SQLite connection must therefore be in autocommit mode
+    # instead of the default implicit-transaction mode.
+    conn = sqlite3.connect(
+        "data/memory_store.sqlite",
+        check_same_thread=False,
+        isolation_level=None,
+    )
     try:
         yield build_store(conn, settings)
     finally:

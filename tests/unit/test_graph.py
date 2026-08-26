@@ -1,9 +1,11 @@
 """Primary seam: the graph's app.invoke() boundary (conversation + tool-call loop)."""
 
-from conftest import build_test_graph
+from conftest import build_test_graph, build_test_settings
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 import tools as tools_module
+from long_term_memory import memory_namespace
+from main import open_store
 
 
 def test_assistant_replies_without_calling_any_tool() -> None:
@@ -70,3 +72,15 @@ def test_assistant_searches_the_web_via_explicit_tool_call(monkeypatch) -> None:
     assert result["messages"][-1].content == "It's sunny today."
     tool_message = next(m for m in result["messages"] if isinstance(m, ToolMessage))
     assert "Sunny all day" in tool_message.content
+
+
+def test_open_store_uses_autocommit_mode_for_sqlite_transactions() -> None:
+    settings = build_test_settings()
+    namespace = memory_namespace("tx-user")
+
+    with open_store(settings) as store:
+        store.put(namespace, "existing", {"content": "User likes tea"})
+        matches = store.search(namespace, query="tea", limit=5)
+
+    assert len(matches) == 1
+    assert matches[0].value["content"] == "User likes tea"
