@@ -58,6 +58,8 @@ def build_test_settings(**overrides: Any) -> Settings:
         "model_max_tokens": 1024,
         "memory_top_k": 5,
         "memory_score_threshold": 0.4,
+        "checkpoint_db_path": "data/checkpoints.sqlite",
+        "memory_store_path": "data/memory_store.sqlite",
     }
     defaults.update(overrides)
     return Settings(**defaults)

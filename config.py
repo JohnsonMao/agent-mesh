@@ -18,6 +18,8 @@ class Settings:
     model_max_tokens: int
     memory_top_k: int
     memory_score_threshold: float
+    checkpoint_db_path: str
+    memory_store_path: str
 
 
 def load_settings() -> Settings:
@@ -32,4 +34,6 @@ def load_settings() -> Settings:
         model_max_tokens=int(os.environ.get("MODEL_MAX_TOKENS", "1024")),
         memory_top_k=int(os.environ.get("MEMORY_TOP_K", "5")),
         memory_score_threshold=float(os.environ.get("MEMORY_SCORE_THRESHOLD", "0.4")),
+        checkpoint_db_path=os.environ.get("CHECKPOINT_DB_PATH", "data/checkpoints.sqlite"),
+        memory_store_path=os.environ.get("MEMORY_STORE_PATH", "data/memory_store.sqlite"),
     )

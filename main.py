@@ -69,8 +69,10 @@ def open_store(settings: Settings) -> Generator[BaseStore]:
     # LangGraph's SqliteStore starts its own transaction via BEGIN/COMMIT inside
     # the store methods; the SQLite connection must therefore be in autocommit mode
     # instead of the default implicit-transaction mode.
+    db_path = Path(settings.memory_store_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(
-        "data/memory_store.sqlite",
+        db_path,
         check_same_thread=False,
         isolation_level=None,
     )
@@ -81,14 +83,15 @@ def open_store(settings: Settings) -> Generator[BaseStore]:
 
 
 def main() -> None:
-    Path("data").mkdir(parents=True, exist_ok=True)
     settings = load_settings()
+    checkpoint_path = Path(settings.checkpoint_db_path)
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     llm = build_llm(settings)
     tools = make_tools(settings)
     handler = LoggingCallbackHandler()
 
     with (
-        SqliteSaver.from_conn_string("data/checkpoints.sqlite") as checkpointer,
+        SqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer,
         open_store(settings) as store,
     ):
         app = build_graph(llm, tools, checkpointer, store)

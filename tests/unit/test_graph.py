@@ -74,8 +74,11 @@ def test_assistant_searches_the_web_via_explicit_tool_call(monkeypatch) -> None:
     assert "Sunny all day" in tool_message.content
 
 
-def test_open_store_uses_autocommit_mode_for_sqlite_transactions() -> None:
-    settings = build_test_settings()
+def test_open_store_uses_autocommit_mode_for_sqlite_transactions(tmp_path) -> None:
+    settings = build_test_settings(
+        checkpoint_db_path=str(tmp_path / "checkpoints.sqlite"),
+        memory_store_path=str(tmp_path / "memory_store.sqlite"),
+    )
     namespace = memory_namespace("tx-user")
 
     with open_store(settings) as store:
