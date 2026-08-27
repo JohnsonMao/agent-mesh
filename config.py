@@ -20,6 +20,9 @@ class Settings:
     memory_score_threshold: float
     checkpoint_db_path: str
     memory_store_path: str
+    slack_bot_token: str
+    slack_app_token: str
+    slack_allowed_user_id: str
 
 
 def load_settings() -> Settings:
@@ -36,4 +39,7 @@ def load_settings() -> Settings:
         memory_score_threshold=float(os.environ.get("MEMORY_SCORE_THRESHOLD", "0.4")),
         checkpoint_db_path=os.environ.get("CHECKPOINT_DB_PATH", "data/checkpoints.sqlite"),
         memory_store_path=os.environ.get("MEMORY_STORE_PATH", "data/memory_store.sqlite"),
+        slack_bot_token=os.environ.get("SLACK_BOT_TOKEN", ""),
+        slack_app_token=os.environ.get("SLACK_APP_TOKEN", ""),
+        slack_allowed_user_id=os.environ.get("SLACK_ALLOWED_USER_ID", ""),
     )

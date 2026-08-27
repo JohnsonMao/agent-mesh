@@ -60,6 +60,9 @@ def build_test_settings(**overrides: Any) -> Settings:
         "memory_score_threshold": 0.4,
         "checkpoint_db_path": "data/checkpoints.sqlite",
         "memory_store_path": "data/memory_store.sqlite",
+        "slack_bot_token": "xoxb-test",
+        "slack_app_token": "xapp-test",
+        "slack_allowed_user_id": "U_ALLOWED",
     }
     defaults.update(overrides)
     return Settings(**defaults)

@@ -12,6 +12,7 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=3.1.1",
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",
+    "slack-bolt>=1.30.0",
 ]
 
 [dependency-groups]
