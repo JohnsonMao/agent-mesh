@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "aiohttp>=3.14.3",
     "ddgs>=9.15.0",
     "langchain>=1.3.13",
     "langchain-openai>=1.3.5",
@@ -21,6 +22,7 @@ dev = [
     "mypy>=2.3.0",
     "poethepoet>=0.48.0",
     "pytest>=8.4.0",
+    "pytest-asyncio>=1.4.0",
 ]
 
 [tool.ruff]
@@ -61,6 +63,7 @@ warn_no_return = true
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests/unit"]
+asyncio_mode = "auto"
 markers = [
     "integration: needs a real LM Studio server running locally (see tests/integration)",
 ]
