@@ -72,6 +72,7 @@ def test_assistant_searches_the_web_via_explicit_tool_call(monkeypatch) -> None:
     assert result["messages"][-1].content == "It's sunny today."
     tool_message = next(m for m in result["messages"] if isinstance(m, ToolMessage))
     assert "Sunny all day" in tool_message.content
+    assert tool_message.artifact == [{"title": "Weather", "url": "http://example.com"}]
 
 
 def test_open_store_uses_autocommit_mode_for_sqlite_transactions(tmp_path) -> None:

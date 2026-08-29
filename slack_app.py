@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from pathlib import Path
 
@@ -16,6 +15,14 @@ from slack_bolt.async_app import AsyncApp
 from config import Settings, load_settings
 from llm import build_llm
 from main import USER_ID, build_graph, open_store
+from slack_status import (
+    build_output_summary,
+    build_sources,
+    build_web_search_output,
+    tool_done_label,
+    tool_live_label,
+)
+from slack_stream import OpenThinkingStream, SlackThinkingStream, ThinkingStream
 from tools import make_tools
 
 logger = logging.getLogger(__name__)
@@ -25,11 +32,42 @@ EMPTY_REPLY = "模型沒有產生回覆內容，請再試一次"
 STATUS_THINKING = "思考中…"
 STATUS_RESUMED = "已收到你的補充，重新整理回覆中…"
 
-PostReply = Callable[[str, str, str], Awaitable[None]]
-SetStatus = Callable[[str, str, str], Awaitable[None]]
 # Per-thread_id registry of the Turn (see CONTEXT.md) currently being processed,
 # so a follow-up message in the same conversation can cancel and restart it.
 InFlightTurns = dict[str, "asyncio.Task"]
+
+
+async def _run_turn(
+    graph: CompiledStateGraph,
+    config: RunnableConfig,
+    text: str,
+    stream: ThinkingStream,
+) -> None:
+    # Stream (rather than a single ainvoke) so each Thinking Step (see CONTEXT.md) -- a
+    # tool call starting or finishing -- can be reflected as a Task Card update live.
+    async for event in graph.astream_events(
+        {"messages": [HumanMessage(content=text)]}, config, version="v2"
+    ):
+        tool_name = event.get("name")
+        if event["event"] == "on_tool_start":
+            await stream.update_task(event["run_id"], tool_live_label(tool_name), "in_progress")
+        elif event["event"] == "on_tool_end":
+            output_message = event["data"]["output"]
+            content = str(getattr(output_message, "content", output_message))
+            artifact = getattr(output_message, "artifact", None) or []
+            if tool_name == "web_search":
+                output = build_web_search_output(artifact)
+                sources = build_sources(artifact)
+            else:
+                output = build_output_summary(tool_name, content)
+                sources = None
+            await stream.update_task(
+                event["run_id"], tool_done_label(tool_name), "complete", output, sources
+            )
+    state = await graph.aget_state(config)
+    reply = state.values["messages"][-1].content
+    # Slack rejects an empty text (no_text error); some models can finish with empty content.
+    await stream.finish(reply or EMPTY_REPLY)
 
 
 async def handle_slack_message(
@@ -37,8 +75,7 @@ async def handle_slack_message(
     *,
     graph: CompiledStateGraph,
     settings: Settings,
-    post_reply: PostReply,
-    set_status: SetStatus,
+    open_thinking_stream: OpenThinkingStream,
     in_flight: InFlightTurns,
 ) -> None:
     if event.get("user") != settings.slack_allowed_user_id:
@@ -53,57 +90,59 @@ async def handle_slack_message(
         previous_turn.cancel()
         with suppress(asyncio.CancelledError):
             await previous_turn
-        await set_status(channel, thread_id, STATUS_RESUMED)
-    else:
-        await set_status(channel, thread_id, STATUS_THINKING)
 
-    turn = asyncio.ensure_future(
-        graph.ainvoke({"messages": [HumanMessage(content=event["text"])]}, config)
-    )
+    stream = await open_thinking_stream(channel, thread_id)
+
+    async def _turn() -> None:
+        try:
+            await _run_turn(graph, config, event["text"], stream)
+        except asyncio.CancelledError:
+            await stream.finish(STATUS_RESUMED)
+            raise
+        except Exception:
+            logger.exception(
+                "handle_slack_message failed for channel=%s thread_id=%s", channel, thread_id
+            )
+            await stream.finish(ERROR_REPLY)
+
+    turn = asyncio.ensure_future(_turn())
     in_flight[thread_id] = turn
 
     try:
-        result = await turn
+        await turn
     except asyncio.CancelledError:
-        return
-    except Exception:
-        logger.exception(
-            "handle_slack_message failed for channel=%s thread_id=%s", channel, thread_id
-        )
-        await post_reply(channel, thread_id, ERROR_REPLY)
         return
     finally:
         if in_flight.get(thread_id) is turn:
             del in_flight[thread_id]
 
-    reply = result["messages"][-1].content
-    # Slack rejects an empty text (no_text error); some models can finish with empty content.
-    await post_reply(channel, thread_id, reply or EMPTY_REPLY)
+
+def _make_open_thinking_stream(app: AsyncApp) -> OpenThinkingStream:
+    async def open_thinking_stream(channel: str, thread_id: str) -> ThinkingStream:
+        raw = await app.client.chat_stream(
+            channel=channel, thread_ts=thread_id, task_display_mode="timeline"
+        )
+        await raw.append(markdown_text=STATUS_THINKING)
+        return SlackThinkingStream(raw)
+
+    return open_thinking_stream
 
 
 def _build_app(graph: CompiledStateGraph, settings: Settings) -> AsyncApp:
     app = AsyncApp(token=settings.slack_bot_token)
     in_flight: InFlightTurns = {}
+    open_thinking_stream = _make_open_thinking_stream(app)
 
     @app.event("message")
-    async def _on_message(event: dict, say: Callable[..., Awaitable[object]]) -> None:
+    async def _on_message(event: dict) -> None:
         if event.get("channel_type") != "im":
             return
-
-        async def post_reply(channel: str, thread_ts: str, text: str) -> None:
-            await say(channel=channel, thread_ts=thread_ts, text=text)
-
-        async def set_status(channel: str, thread_ts: str, status: str) -> None:
-            await app.client.assistant_threads_setStatus(
-                channel_id=channel, thread_ts=thread_ts, status=status
-            )
 
         await handle_slack_message(
             event,
             graph=graph,
             settings=settings,
-            post_reply=post_reply,
-            set_status=set_status,
+            open_thinking_stream=open_thinking_stream,
             in_flight=in_flight,
         )
 

@@ -79,13 +79,15 @@ def make_recall_memory(settings: Settings) -> BaseTool:
     return recall_memory
 
 
-@tool("web_search", args_schema=WebSearchInput)
-def web_search(query: str) -> str:
+@tool("web_search", args_schema=WebSearchInput, response_format="content_and_artifact")
+def web_search(query: str) -> tuple[str, list[dict[str, str]]]:
     """Search the web for current or unknown information."""
     results = DDGS().text(query, max_results=5)
     if not results:
-        return "No results found."
-    return "\n\n".join(f"{r['title']}: {r['body']} ({r['href']})" for r in results)
+        return "No results found.", []
+    content = "\n\n".join(f"{r['title']}: {r['body']} ({r['href']})" for r in results)
+    artifact = [{"title": r["title"], "url": r["href"]} for r in results]
+    return content, artifact
 
 
 def make_tools(settings: Settings) -> list[BaseTool]:
