@@ -56,6 +56,8 @@ def build_test_settings(**overrides: Any) -> Settings:
         "lm_studio_embedding_model": "test-embedding",
         "model_temperature": 0.2,
         "model_max_tokens": 1024,
+        "model_frequency_penalty": 0.3,
+        "model_presence_penalty": 0.3,
         "memory_top_k": 5,
         "memory_score_threshold": 0.4,
         "checkpoint_db_path": "data/checkpoints.sqlite",

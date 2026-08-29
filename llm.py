@@ -15,4 +15,6 @@ def build_llm(settings: Settings) -> BaseChatModel:
         api_key=SecretStr("lm-studio"),  # LM Studio ignores the key but the client requires one
         temperature=settings.model_temperature,
         max_tokens=settings.model_max_tokens,
+        frequency_penalty=settings.model_frequency_penalty,
+        presence_penalty=settings.model_presence_penalty,
     )

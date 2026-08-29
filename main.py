@@ -3,6 +3,7 @@
 import sqlite3
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 from langchain_core.language_models import LanguageModelInput
@@ -27,21 +28,27 @@ from tools import make_tools
 # This assistant is designed for a single person; there is no multi-user concept.
 USER_ID = "the-user"
 
-SYSTEM_PROMPT = (
+SYSTEM_PROMPT_TEMPLATE = (
     "You are a personal AI assistant. You may call the recall_memory tool if "
     "relevant saved facts would help you answer, and the save_memory tool when "
     "you judge a fact is worth remembering long-term. You may call the "
     "web_search tool when you need current or unknown information. Only call a "
     "tool when it genuinely helps the current turn; never take action the user "
-    "didn't ask for."
+    "didn't ask for.\n\n"
+    "Current date and time: {now}. Use this as the basis for any relative date "
+    "(e.g. \"tomorrow\", \"today\") instead of dates found in tool results."
 )
+
+
+def _system_prompt() -> str:
+    return SYSTEM_PROMPT_TEMPLATE.format(now=datetime.now().strftime("%Y-%m-%d (%A) %H:%M"))
 
 
 def call_model(
     llm_with_tools: Runnable[LanguageModelInput, AIMessage],
 ) -> Callable[[MessagesState, RunnableConfig], MessagesState]:
     def _call_model(state: MessagesState, config: RunnableConfig) -> MessagesState:
-        messages = [SystemMessage(content=SYSTEM_PROMPT), *state["messages"]]
+        messages = [SystemMessage(content=_system_prompt()), *state["messages"]]
         response = llm_with_tools.invoke(messages, config)
         return {"messages": [response]}
 

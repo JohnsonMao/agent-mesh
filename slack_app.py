@@ -21,6 +21,7 @@ from tools import make_tools
 logger = logging.getLogger(__name__)
 
 ERROR_REPLY = "發生錯誤，請稍後再試"
+EMPTY_REPLY = "模型沒有產生回覆內容，請再試一次"
 STATUS_THINKING = "思考中…"
 STATUS_RESUMED = "已收到你的補充，重新整理回覆中…"
 
@@ -76,7 +77,8 @@ async def handle_slack_message(
             del in_flight[thread_id]
 
     reply = result["messages"][-1].content
-    await post_reply(channel, thread_id, reply)
+    # Slack rejects an empty text (no_text error); some models can finish with empty content.
+    await post_reply(channel, thread_id, reply or EMPTY_REPLY)
 
 
 def _build_app(graph: CompiledStateGraph, settings: Settings) -> AsyncApp:
