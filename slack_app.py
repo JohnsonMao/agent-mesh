@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from pathlib import Path
 
@@ -32,6 +33,7 @@ EMPTY_REPLY = "模型沒有產生回覆內容，請再試一次"
 STATUS_THINKING = "思考中…"
 STATUS_RESUMED = "已收到你的補充，重新整理回覆中…"
 
+SetStatus = Callable[[str, str, str], Awaitable[None]]
 # Per-thread_id registry of the Turn (see CONTEXT.md) currently being processed,
 # so a follow-up message in the same conversation can cancel and restart it.
 InFlightTurns = dict[str, "asyncio.Task"]
@@ -75,6 +77,7 @@ async def handle_slack_message(
     *,
     graph: CompiledStateGraph,
     settings: Settings,
+    set_status: SetStatus,
     open_thinking_stream: OpenThinkingStream,
     in_flight: InFlightTurns,
 ) -> None:
@@ -90,7 +93,13 @@ async def handle_slack_message(
         previous_turn.cancel()
         with suppress(asyncio.CancelledError):
             await previous_turn
+        await set_status(channel, thread_id, STATUS_RESUMED)
+    else:
+        await set_status(channel, thread_id, STATUS_THINKING)
 
+    # No initial content here: chat.appendStream/stopStream text is cumulative, so any
+    # placeholder posted at open time would stay stuck in front of everything that
+    # follows (see ADR 0004). set_status above is Slack's own "is thinking" affordance.
     stream = await open_thinking_stream(channel, thread_id)
 
     async def _turn() -> None:
@@ -117,12 +126,14 @@ async def handle_slack_message(
             del in_flight[thread_id]
 
 
-def _make_open_thinking_stream(app: AsyncApp) -> OpenThinkingStream:
+def _make_open_thinking_stream(app: AsyncApp, settings: Settings) -> OpenThinkingStream:
     async def open_thinking_stream(channel: str, thread_id: str) -> ThinkingStream:
         raw = await app.client.chat_stream(
-            channel=channel, thread_ts=thread_id, task_display_mode="timeline"
+            channel=channel,
+            thread_ts=thread_id,
+            task_display_mode="timeline",
+            recipient_user_id=settings.slack_allowed_user_id,
         )
-        await raw.append(markdown_text=STATUS_THINKING)
         return SlackThinkingStream(raw)
 
     return open_thinking_stream
@@ -131,17 +142,23 @@ def _make_open_thinking_stream(app: AsyncApp) -> OpenThinkingStream:
 def _build_app(graph: CompiledStateGraph, settings: Settings) -> AsyncApp:
     app = AsyncApp(token=settings.slack_bot_token)
     in_flight: InFlightTurns = {}
-    open_thinking_stream = _make_open_thinking_stream(app)
+    open_thinking_stream = _make_open_thinking_stream(app, settings)
 
     @app.event("message")
     async def _on_message(event: dict) -> None:
         if event.get("channel_type") != "im":
             return
 
+        async def set_status(channel: str, thread_ts: str, status: str) -> None:
+            await app.client.assistant_threads_setStatus(
+                channel_id=channel, thread_ts=thread_ts, status=status, loading_messages=[status]
+            )
+
         await handle_slack_message(
             event,
             graph=graph,
             settings=settings,
+            set_status=set_status,
             open_thinking_stream=open_thinking_stream,
             in_flight=in_flight,
         )

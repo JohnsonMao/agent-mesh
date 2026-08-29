@@ -42,6 +42,14 @@ class FakeOpenThinkingStream:
         return stream
 
 
+class FakeSetStatus:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+
+    async def __call__(self, channel: str, thread_id: str, status: str) -> None:
+        self.calls.append((channel, thread_id, status))
+
+
 def _fake_astream_events(tool_calls: list[tuple[str, str, str, list[dict]]]):
     """tool_calls: (run_id, tool_name, content, artifact), yielded start then end per call."""
 
@@ -76,6 +84,7 @@ async def test_replies_to_a_top_level_dm_using_its_own_ts_as_thread_id() -> None
     graph = build_test_graph([AIMessage(content="Hello! How can I help?")])
     settings = build_test_settings()
     open_thinking_stream = FakeOpenThinkingStream()
+    set_status = FakeSetStatus()
     in_flight: InFlightTurns = {}
     event = {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "hi"}
 
@@ -83,6 +92,7 @@ async def test_replies_to_a_top_level_dm_using_its_own_ts_as_thread_id() -> None
         event,
         graph=graph,
         settings=settings,
+        set_status=set_status,
         open_thinking_stream=open_thinking_stream,
         in_flight=in_flight,
     )
@@ -91,6 +101,7 @@ async def test_replies_to_a_top_level_dm_using_its_own_ts_as_thread_id() -> None
     (stream,) = open_thinking_stream.streams
     assert stream.updates == []
     assert stream.finished == "Hello! How can I help?"
+    assert set_status.calls == [("D1", "111.1", "思考中…")]
     assert in_flight == {}
 
 
@@ -102,6 +113,7 @@ async def test_a_tool_call_updates_its_task_from_in_progress_to_complete() -> No
     graph.aget_state = _fake_aget_state("Got it, I'll remember that.")  # type: ignore[method-assign]
     settings = build_test_settings()
     open_thinking_stream = FakeOpenThinkingStream()
+    set_status = FakeSetStatus()
     in_flight: InFlightTurns = {}
     event = {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "I like tea"}
 
@@ -109,6 +121,7 @@ async def test_a_tool_call_updates_its_task_from_in_progress_to_complete() -> No
         event,
         graph=graph,
         settings=settings,
+        set_status=set_status,
         open_thinking_stream=open_thinking_stream,
         in_flight=in_flight,
     )
@@ -136,6 +149,7 @@ async def test_web_search_task_card_gets_titles_as_output_and_urls_as_sources() 
     graph.aget_state = _fake_aget_state("It's sunny today.")  # type: ignore[method-assign]
     settings = build_test_settings()
     open_thinking_stream = FakeOpenThinkingStream()
+    set_status = FakeSetStatus()
     in_flight: InFlightTurns = {}
     event = {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "weather?"}
 
@@ -143,6 +157,7 @@ async def test_web_search_task_card_gets_titles_as_output_and_urls_as_sources() 
         event,
         graph=graph,
         settings=settings,
+        set_status=set_status,
         open_thinking_stream=open_thinking_stream,
         in_flight=in_flight,
     )
@@ -164,6 +179,7 @@ async def test_multiple_different_tool_calls_each_get_their_own_stacked_task_car
     graph.aget_state = _fake_aget_state("Done.")  # type: ignore[method-assign]
     settings = build_test_settings()
     open_thinking_stream = FakeOpenThinkingStream()
+    set_status = FakeSetStatus()
     in_flight: InFlightTurns = {}
     event = {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "hi"}
 
@@ -171,6 +187,7 @@ async def test_multiple_different_tool_calls_each_get_their_own_stacked_task_car
         event,
         graph=graph,
         settings=settings,
+        set_status=set_status,
         open_thinking_stream=open_thinking_stream,
         in_flight=in_flight,
     )
@@ -184,6 +201,7 @@ async def test_ignores_dms_from_non_whitelisted_users() -> None:
     graph = build_test_graph([AIMessage(content="should not be called")])
     settings = build_test_settings()
     open_thinking_stream = FakeOpenThinkingStream()
+    set_status = FakeSetStatus()
     in_flight: InFlightTurns = {}
     event = {"user": "U_STRANGER", "channel": "D1", "ts": "111.1", "text": "hi"}
 
@@ -191,6 +209,7 @@ async def test_ignores_dms_from_non_whitelisted_users() -> None:
         event,
         graph=graph,
         settings=settings,
+        set_status=set_status,
         open_thinking_stream=open_thinking_stream,
         in_flight=in_flight,
     )
@@ -208,6 +227,7 @@ async def test_replies_with_a_short_error_message_when_the_graph_raises(monkeypa
     monkeypatch.setattr(graph, "astream_events", boom)
     settings = build_test_settings()
     open_thinking_stream = FakeOpenThinkingStream()
+    set_status = FakeSetStatus()
     in_flight: InFlightTurns = {}
     event = {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "hi"}
 
@@ -215,6 +235,7 @@ async def test_replies_with_a_short_error_message_when_the_graph_raises(monkeypa
         event,
         graph=graph,
         settings=settings,
+        set_status=set_status,
         open_thinking_stream=open_thinking_stream,
         in_flight=in_flight,
     )
@@ -231,6 +252,7 @@ async def test_replies_within_the_same_slack_thread_continue_the_same_conversati
     )
     settings = build_test_settings()
     open_thinking_stream = FakeOpenThinkingStream()
+    set_status = FakeSetStatus()
     in_flight: InFlightTurns = {}
     first_event = {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "I like tea"}
     reply_event = {
@@ -245,6 +267,7 @@ async def test_replies_within_the_same_slack_thread_continue_the_same_conversati
         first_event,
         graph=graph,
         settings=settings,
+        set_status=set_status,
         open_thinking_stream=open_thinking_stream,
         in_flight=in_flight,
     )
@@ -252,6 +275,7 @@ async def test_replies_within_the_same_slack_thread_continue_the_same_conversati
         reply_event,
         graph=graph,
         settings=settings,
+        set_status=set_status,
         open_thinking_stream=open_thinking_stream,
         in_flight=in_flight,
     )
@@ -268,6 +292,7 @@ async def test_a_followup_message_cancels_the_in_flight_turn_and_starts_a_fresh_
     graph = build_test_graph([AIMessage(content="unused")])
     settings = build_test_settings()
     open_thinking_stream = FakeOpenThinkingStream()
+    set_status = FakeSetStatus()
     in_flight: InFlightTurns = {}
     started = asyncio.Event()
     call_count = 0
@@ -299,6 +324,7 @@ async def test_a_followup_message_cancels_the_in_flight_turn_and_starts_a_fresh_
             first_event,
             graph=graph,
             settings=settings,
+            set_status=set_status,
             open_thinking_stream=open_thinking_stream,
             in_flight=in_flight,
         )
@@ -309,6 +335,7 @@ async def test_a_followup_message_cancels_the_in_flight_turn_and_starts_a_fresh_
         second_event,
         graph=graph,
         settings=settings,
+        set_status=set_status,
         open_thinking_stream=open_thinking_stream,
         in_flight=in_flight,
     )
@@ -318,6 +345,10 @@ async def test_a_followup_message_cancels_the_in_flight_turn_and_starts_a_fresh_
     first_stream, second_stream = open_thinking_stream.streams
     assert first_stream.finished == "已收到你的補充，重新整理回覆中…"
     assert second_stream.finished == "the combined reply"
+    assert set_status.calls == [
+        ("D1", "111.1", "思考中…"),
+        ("D1", "111.1", "已收到你的補充，重新整理回覆中…"),
+    ]
     assert in_flight == {}
 
 
@@ -325,6 +356,7 @@ async def test_in_flight_turns_for_different_conversations_do_not_interfere() ->
     graph = build_test_graph([AIMessage(content="unused")])
     settings = build_test_settings()
     open_thinking_stream = FakeOpenThinkingStream()
+    set_status = FakeSetStatus()
     in_flight: InFlightTurns = {}
     started = asyncio.Event()
     hold = asyncio.Event()
@@ -357,6 +389,7 @@ async def test_in_flight_turns_for_different_conversations_do_not_interfere() ->
             slow_event,
             graph=graph,
             settings=settings,
+            set_status=set_status,
             open_thinking_stream=open_thinking_stream,
             in_flight=in_flight,
         )
@@ -367,6 +400,7 @@ async def test_in_flight_turns_for_different_conversations_do_not_interfere() ->
         other_event,
         graph=graph,
         settings=settings,
+        set_status=set_status,
         open_thinking_stream=open_thinking_stream,
         in_flight=in_flight,
     )
@@ -379,3 +413,48 @@ async def test_in_flight_turns_for_different_conversations_do_not_interfere() ->
 
     assert open_thinking_stream.streams[0].finished == "reply for 111.1"
     assert in_flight == {}
+
+
+async def test_open_thinking_stream_posts_no_placeholder_content_up_front() -> None:
+    """Guards against a real bug: stream text is cumulative, so an initial placeholder
+    would stay stuck in front of everything appended afterward (see ADR 0004)."""
+    from slack_app import _make_open_thinking_stream
+
+    class FakeRawChatStream:
+        def __init__(self) -> None:
+            self.append_calls: list[dict] = []
+
+        async def append(self, **kwargs: object) -> None:
+            self.append_calls.append(kwargs)
+
+        async def stop(self, **kwargs: object) -> None:
+            pass
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.chat_stream_calls: list[dict] = []
+            self.raw = FakeRawChatStream()
+
+        async def chat_stream(self, **kwargs: object) -> FakeRawChatStream:
+            self.chat_stream_calls.append(kwargs)
+            return self.raw
+
+    class FakeApp:
+        def __init__(self) -> None:
+            self.client = FakeClient()
+
+    app = FakeApp()
+    settings = build_test_settings()
+
+    open_thinking_stream = _make_open_thinking_stream(app, settings)  # type: ignore[arg-type]
+    await open_thinking_stream("D1", "111.1")
+
+    assert app.client.chat_stream_calls == [
+        {
+            "channel": "D1",
+            "thread_ts": "111.1",
+            "task_display_mode": "timeline",
+            "recipient_user_id": "U_ALLOWED",
+        }
+    ]
+    assert app.client.raw.append_calls == []
