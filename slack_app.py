@@ -16,6 +16,7 @@ from slack_bolt.async_app import AsyncApp
 from config import Settings, load_settings
 from llm import build_llm
 from main import USER_ID, build_graph, open_store
+from skills import load_skills
 from slack_status import (
     build_output_summary,
     build_sources,
@@ -178,12 +179,13 @@ def main() -> None:
     checkpoint_path = Path(settings.checkpoint_db_path)
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     llm = build_llm(settings)
-    tools = make_tools(settings)
+    skills = load_skills(settings.skills_dir)
+    tools = make_tools(settings, skills)
 
     async def _amain() -> None:
         async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
             with open_store(settings) as store:
-                graph = build_graph(llm, tools, checkpointer, store)
+                graph = build_graph(llm, tools, checkpointer, store, skills)
                 await _run(graph, settings)
 
     asyncio.run(_amain())

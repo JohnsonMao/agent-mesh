@@ -75,6 +75,44 @@ def test_assistant_searches_the_web_via_explicit_tool_call(monkeypatch) -> None:
     assert tool_message.artifact == [{"title": "Weather", "url": "http://example.com"}]
 
 
+def test_assistant_loads_a_skill_via_explicit_tool_call(tmp_path) -> None:
+    skill_dir = tmp_path / "greeting"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: greeting\ndescription: How to greet the user warmly.\n---\n\n"
+        "Always greet enthusiastically.\n"
+    )
+    settings = build_test_settings(skills_dir=str(tmp_path))
+    tool_call = {"name": "load_skill", "args": {"name": "greeting"}, "id": "call-1"}
+    responses = [
+        AIMessage(content="", tool_calls=[tool_call]),
+        AIMessage(content="Got it, I'll greet you warmly."),
+    ]
+    graph = build_test_graph(responses, settings)
+    config = {"configurable": {"thread_id": "t1", "user_id": "u1"}}
+
+    result = graph.invoke({"messages": [HumanMessage(content="greet me")]}, config)
+
+    assert result["messages"][-1].content == "Got it, I'll greet you warmly."
+    tool_message = next(m for m in result["messages"] if isinstance(m, ToolMessage))
+    assert tool_message.content == "Always greet enthusiastically."
+
+
+def test_assistant_gets_an_error_string_for_an_unknown_skill_name() -> None:
+    tool_call = {"name": "load_skill", "args": {"name": "nonexistent"}, "id": "call-1"}
+    responses = [
+        AIMessage(content="", tool_calls=[tool_call]),
+        AIMessage(content="Sorry, I couldn't find that."),
+    ]
+    graph = build_test_graph(responses)
+    config = {"configurable": {"thread_id": "t1", "user_id": "u1"}}
+
+    result = graph.invoke({"messages": [HumanMessage(content="use the nonexistent skill")]}, config)
+
+    tool_message = next(m for m in result["messages"] if isinstance(m, ToolMessage))
+    assert "No skill named 'nonexistent' found" in tool_message.content
+
+
 def test_open_store_uses_autocommit_mode_for_sqlite_transactions(tmp_path) -> None:
     settings = build_test_settings(
         checkpoint_db_path=str(tmp_path / "checkpoints.sqlite"),

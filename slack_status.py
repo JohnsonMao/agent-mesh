@@ -8,12 +8,14 @@ _LIVE_LABELS = {
     "web_search": "🔍 正在搜尋網路…",
     "recall_memory": "🧠 正在回想相關記憶…",
     "save_memory": "📝 正在記下新的一件事…",
+    "load_skill": "📘 正在載入技能…",
 }
 
 _DONE_LABELS = {
     "web_search": "🔍 搜尋網路",
     "recall_memory": "🧠 查詢記憶",
     "save_memory": "📝 記住新事項",
+    "load_skill": "📘 載入技能",
 }
 
 _SAVE_MEMORY_PREFIXES = ("Saved memory: ", "Updated existing memory: ")

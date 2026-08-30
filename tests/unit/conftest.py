@@ -15,6 +15,7 @@ from langgraph.store.memory import InMemoryStore
 
 from config import Settings
 from main import build_graph
+from skills import load_skills
 from tools import make_tools
 
 
@@ -62,6 +63,7 @@ def build_test_settings(**overrides: Any) -> Settings:
         "memory_score_threshold": 0.4,
         "checkpoint_db_path": "data/checkpoints.sqlite",
         "memory_store_path": "data/memory_store.sqlite",
+        "skills_dir": "nonexistent-skills-dir",
         "slack_bot_token": "xoxb-test",
         "slack_app_token": "xapp-test",
         "slack_allowed_user_id": "U_ALLOWED",
@@ -81,7 +83,8 @@ def build_test_graph(
 ) -> CompiledStateGraph:
     settings = settings or build_test_settings()
     llm = FakeToolChatModel(messages=iter(responses))
-    tools = make_tools(settings)
+    skills = load_skills(settings.skills_dir)
+    tools = make_tools(settings, skills)
     checkpointer = InMemorySaver()
     store = build_test_store()
-    return build_graph(llm, tools, checkpointer, store)
+    return build_graph(llm, tools, checkpointer, store, skills)

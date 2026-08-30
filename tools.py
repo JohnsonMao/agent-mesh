@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from config import Settings
 from llm import build_llm
 from long_term_memory import memory_namespace
+from skills import Skill
 
 MEMORY_MERGE_PROMPT = (
     "You maintain a personal assistant's long-term memory. Merge the new fact "
@@ -30,6 +31,10 @@ class RecallMemoryInput(BaseModel):
 
 class WebSearchInput(BaseModel):
     query: str = Field(description="The web search query.")
+
+
+class LoadSkillInput(BaseModel):
+    name: str = Field(description="The name of the skill to load.")
 
 
 def merge_memory_content(settings: Settings, existing: str, new: str) -> str:
@@ -90,5 +95,24 @@ def web_search(query: str) -> tuple[str, list[dict[str, str]]]:
     return content, artifact
 
 
-def make_tools(settings: Settings) -> list[BaseTool]:
-    return [make_save_memory(settings), make_recall_memory(settings), web_search]
+def make_load_skill(skills: list[Skill]) -> BaseTool:
+    skills_by_name = {skill.name: skill for skill in skills}
+
+    @tool("load_skill", args_schema=LoadSkillInput)
+    def load_skill(name: str) -> str:
+        """Load the full instructions for a Skill by name."""
+        skill = skills_by_name.get(name)
+        if skill is None:
+            return f"No skill named '{name}' found."
+        return skill.body
+
+    return load_skill
+
+
+def make_tools(settings: Settings, skills: list[Skill]) -> list[BaseTool]:
+    return [
+        make_save_memory(settings),
+        make_recall_memory(settings),
+        web_search,
+        make_load_skill(skills),
+    ]

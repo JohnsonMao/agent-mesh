@@ -22,6 +22,7 @@ from langgraph.store.base import BaseStore
 from config import Settings, load_settings
 from llm import build_llm
 from long_term_memory import build_store
+from skills import Skill, load_skills
 from stats import LoggingCallbackHandler, summarize_call_stats, summarize_tool_stats
 from tools import make_tools
 
@@ -39,16 +40,28 @@ SYSTEM_PROMPT_TEMPLATE = (
     "(e.g. \"tomorrow\", \"today\") instead of dates found in tool results."
 )
 
+SKILLS_PROMPT_SECTION_TEMPLATE = (
+    "\n\nAvailable skills (call load_skill with the skill's name to get its full "
+    "instructions when one matches the current request):\n{skill_lines}"
+)
 
-def _system_prompt() -> str:
-    return SYSTEM_PROMPT_TEMPLATE.format(now=datetime.now().strftime("%Y-%m-%d (%A) %H:%M"))
+
+def _system_prompt(skills: list[Skill]) -> str:
+    prompt = SYSTEM_PROMPT_TEMPLATE.format(now=datetime.now().strftime("%Y-%m-%d (%A) %H:%M"))
+    if skills:
+        skill_lines = "\n".join(
+            f"- {skill.name}: {skill.description}" for skill in sorted(skills, key=lambda s: s.name)
+        )
+        prompt += SKILLS_PROMPT_SECTION_TEMPLATE.format(skill_lines=skill_lines)
+    return prompt
 
 
 def call_model(
     llm_with_tools: Runnable[LanguageModelInput, AIMessage],
+    skills: list[Skill],
 ) -> Callable[[MessagesState, RunnableConfig], MessagesState]:
     def _call_model(state: MessagesState, config: RunnableConfig) -> MessagesState:
-        messages = [SystemMessage(content=_system_prompt()), *state["messages"]]
+        messages = [SystemMessage(content=_system_prompt(skills)), *state["messages"]]
         response = llm_with_tools.invoke(messages, config)
         return {"messages": [response]}
 
@@ -60,10 +73,11 @@ def build_graph(
     tools: list[BaseTool],
     checkpointer: BaseCheckpointSaver,
     store: BaseStore,
+    skills: list[Skill] | None = None,
 ) -> CompiledStateGraph:
     llm_with_tools = llm.bind_tools(tools)
     graph = StateGraph(MessagesState)
-    graph.add_node("model", call_model(llm_with_tools))  # type: ignore[call-overload]
+    graph.add_node("model", call_model(llm_with_tools, skills or []))  # type: ignore[call-overload]
     graph.add_node("tools", ToolNode(tools))
     graph.set_entry_point("model")
     graph.add_conditional_edges("model", tools_condition)
@@ -94,14 +108,15 @@ def main() -> None:
     checkpoint_path = Path(settings.checkpoint_db_path)
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     llm = build_llm(settings)
-    tools = make_tools(settings)
+    skills = load_skills(settings.skills_dir)
+    tools = make_tools(settings, skills)
     handler = LoggingCallbackHandler()
 
     with (
         SqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer,
         open_store(settings) as store,
     ):
-        app = build_graph(llm, tools, checkpointer, store)
+        app = build_graph(llm, tools, checkpointer, store, skills)
         config: RunnableConfig = {
             "configurable": {"thread_id": "assistant", "user_id": USER_ID},
             "callbacks": [handler],
