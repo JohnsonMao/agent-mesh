@@ -173,3 +173,59 @@ def test_a_message_with_a_sent_at_timestamp_is_prefixed_for_the_model_but_stored
     assert received_human.content == "[2026-08-28 09:00] hi"
     stored_human = graph.get_state(config).values["messages"][0]
     assert stored_human.content == "hi"
+
+
+def test_a_message_with_an_image_is_analyzed_before_reaching_the_model() -> None:
+    model = RecordingChatModel(
+        messages=iter(
+            [AIMessage(content="A photo of a cat wearing a hat."), AIMessage(content="Cute cat!")]
+        )
+    )
+    graph = build_test_graph([], llm=model)
+    config = {"configurable": {"thread_id": "t1", "user_id": "u1"}}
+    image_message = HumanMessage(
+        content=[
+            {"type": "text", "text": "what is this?"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA="}},
+        ]
+    )
+
+    result = graph.invoke({"messages": [image_message]}, config)
+
+    assert result["messages"][-1].content == "Cute cat!"
+    stored_human = result["messages"][0]
+    assert stored_human.content == "what is this?\n\n[圖片內容：A photo of a cat wearing a hat.]"
+    received_human = next(m for m in model.received_messages[-1] if isinstance(m, HumanMessage))
+    assert received_human.content.startswith("what is this?")
+    assert "image_url" not in str(received_human.content)
+
+
+def test_an_image_message_with_no_accompanying_text_is_still_analyzed() -> None:
+    model = RecordingChatModel(
+        messages=iter([AIMessage(content="A sunny beach."), AIMessage(content="Nice beach!")])
+    )
+    graph = build_test_graph([], llm=model)
+    config = {"configurable": {"thread_id": "t1", "user_id": "u1"}}
+    image_message = HumanMessage(
+        content=[
+            {"type": "text", "text": ""},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA="}},
+        ]
+    )
+
+    result = graph.invoke({"messages": [image_message]}, config)
+
+    stored_human = result["messages"][0]
+    assert stored_human.content == "[圖片內容：A sunny beach.]"
+
+
+def test_a_plain_text_message_skips_the_image_analysis_step() -> None:
+    model = RecordingChatModel(messages=iter([AIMessage(content="ok")]))
+    graph = build_test_graph([], llm=model)
+    config = {"configurable": {"thread_id": "t1", "user_id": "u1"}}
+
+    graph.invoke({"messages": [HumanMessage(content="hi")]}, config)
+
+    # analyze_images and model share the same llm instance (see main.py), so a skipped
+    # analyze_images step shows up as exactly one invoke() call, not two.
+    assert len(model.received_messages) == 1

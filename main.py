@@ -1,7 +1,7 @@
 """Graph assembly and CLI entrypoint for the Assistant."""
 
 import sqlite3
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -56,6 +56,17 @@ SKILLS_PROMPT_SECTION_TEMPLATE = (
     "with read_skill_resource or run with run_skill_script if relevant):\n{skill_lines}"
 )
 
+IMAGE_ANALYSIS_PROMPT = (
+    "The user sent one or more images along with the text below (it may be empty). "
+    "Analyze the image(s) using that text as context: read any visible text (OCR), "
+    "describe relevant visual details, and directly answer the user's question if the "
+    "image makes that possible. Respond with a concise analysis only, no preamble.\n\n"
+    "User's text: {text}"
+)
+
+# Marks the analyzed text as coming from an image, not typed by the user directly.
+IMAGE_ANALYSIS_MARKER = "[圖片內容：{analysis}]"
+
 
 def current_sent_at() -> str:
     return datetime.now().strftime(TIMESTAMP_FORMAT)
@@ -107,6 +118,65 @@ def _tools_node(tools: list[BaseTool]) -> Callable[[MessagesState, RunnableConfi
     return _run_tools
 
 
+def _has_image_content(message: BaseMessage) -> bool:
+    if not isinstance(message.content, list):
+        return False
+    return any(
+        isinstance(block, dict) and block.get("type") == "image_url" for block in message.content
+    )
+
+
+def _extract_text(content: Sequence[object]) -> str:
+    return "\n".join(
+        block["text"]
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
+
+
+def _route_after_entry(state: MessagesState) -> str:
+    messages = state["messages"]
+    if messages and _has_image_content(messages[-1]):
+        return "analyze_images"
+    return "model"
+
+
+def analyze_images(llm: BaseChatModel) -> Callable[[MessagesState, RunnableConfig], MessagesState]:
+    """Mandatory Thinking Step (see CONTEXT.md, ADR 0006) that turns an image-bearing
+    HumanMessage into a text-only one before it ever reaches the model or a checkpoint.
+    """
+
+    def _analyze_images(state: MessagesState, config: RunnableConfig) -> MessagesState:
+        original = state["messages"][-1]
+        content = original.content
+        assert isinstance(content, list)
+        text = _extract_text(content)
+        image_blocks = [
+            block
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "image_url"
+        ]
+        prompt = [
+            HumanMessage(
+                content=[
+                    {"type": "text", "text": IMAGE_ANALYSIS_PROMPT.format(text=text)},
+                    *image_blocks,
+                ]
+            )
+        ]
+        analysis = llm.invoke(prompt, config)
+        marker = IMAGE_ANALYSIS_MARKER.format(analysis=analysis.content)
+        new_content = f"{text}\n\n{marker}" if text else marker
+        replacement = HumanMessage(
+            id=original.id,
+            content=new_content,
+            additional_kwargs=original.additional_kwargs,
+        )
+        return {"messages": [replacement]}
+
+    return _analyze_images
+
+
 def build_graph(
     llm: BaseChatModel,
     tools: list[BaseTool],
@@ -118,7 +188,9 @@ def build_graph(
     graph = StateGraph(MessagesState)
     graph.add_node("model", call_model(llm_with_tools, skills or []))  # type: ignore[call-overload]
     graph.add_node("tools", _tools_node(tools))  # type: ignore[call-overload]
-    graph.set_entry_point("model")
+    graph.add_node("analyze_images", analyze_images(llm))  # type: ignore[call-overload]
+    graph.set_conditional_entry_point(_route_after_entry)
+    graph.add_edge("analyze_images", "model")
     graph.add_conditional_edges("model", tools_condition)
     graph.add_edge("tools", "model")
     return graph.compile(checkpointer=checkpointer, store=store)

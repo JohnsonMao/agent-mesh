@@ -33,5 +33,5 @@ Conversation 內一次使用者輸入到 Assistant 產生對應回覆為止的�
 _Avoid_: Message（Message 是 Turn 的輸入或輸出之一，不是 Turn 本身）, Round
 
 **Thinking Step（思考步驟）**:
-Turn 內呼叫某個 Tool 這件事本身，不包含「model 還在生成、尚未呼叫工具」的狀態（那仍算單純的思考中）。是 Assistant 對外呈現執行過程的最小單位。
-_Avoid_: Status（Status 是呈現用的文字，Thinking Step 是背後代表的事件本身）
+Turn 內 Assistant 執行某個可觀察、有明確起訖的中間處理步驟（例如呼叫外部能力、或對輸入內容做額外處理），不包含「model 還在生成、尚未進入這類步驟」的狀態（那仍算單純的思考中）。是 Assistant 對外呈現執行過程的最小單位。
+_Avoid_: Status（Status 是呈現用的文字，Thinking Step 是背後代表的事件本身）、不要限定只對應到 Tool 呼叫——凡是值得讓使用者看到「目前在做什麼」的中間步驟都算

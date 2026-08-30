@@ -17,6 +17,7 @@ def test_tool_live_label_uses_the_per_tool_copy() -> None:
     assert tool_live_label("save_memory") == "📝 正在記下新的一件事…"
     assert tool_live_label("read_skill_resource") == "📖 正在讀取技能參考資料…"
     assert tool_live_label("run_skill_script") == "⚙️ 正在執行技能腳本…"
+    assert tool_live_label("analyze_images") == "🖼️ 正在讀取圖片…"
 
 
 def test_tool_live_label_falls_back_for_unknown_tools() -> None:
@@ -29,6 +30,7 @@ def test_tool_done_label_uses_the_per_tool_copy() -> None:
     assert tool_done_label("save_memory") == "📝 記住新事項"
     assert tool_done_label("read_skill_resource") == "📖 讀取技能參考資料"
     assert tool_done_label("run_skill_script") == "⚙️ 執行技能腳本"
+    assert tool_done_label("analyze_images") == "🖼️ 分析圖片"
 
 
 def test_build_output_summary_strips_the_save_memory_prefix() -> None:

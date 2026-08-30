@@ -50,6 +50,20 @@ class FakeSetStatus:
         self.calls.append((channel, thread_id, status))
 
 
+class FakeDownloadImage:
+    """Records which Slack file objects were requested and hands back scripted bytes."""
+
+    def __init__(self, results: dict[str, bytes] | None = None) -> None:
+        self.results = results or {}
+        self.calls: list[dict] = []
+
+    async def __call__(self, file: dict) -> bytes:
+        self.calls.append(file)
+        if file["id"] not in self.results:
+            raise RuntimeError(f"no fake download configured for {file['id']}")
+        return self.results[file["id"]]
+
+
 def _fake_astream_events(tool_calls: list[tuple[str, str, str, list[dict]]]):
     """tool_calls: (run_id, tool_name, content, artifact), yielded start then end per call."""
 
@@ -85,6 +99,7 @@ async def test_replies_to_a_top_level_dm_using_its_own_ts_as_thread_id() -> None
     settings = build_test_settings()
     open_thinking_stream = FakeOpenThinkingStream()
     set_status = FakeSetStatus()
+    download_image = FakeDownloadImage()
     in_flight: InFlightTurns = {}
     event = {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "hi"}
 
@@ -94,6 +109,7 @@ async def test_replies_to_a_top_level_dm_using_its_own_ts_as_thread_id() -> None
         settings=settings,
         set_status=set_status,
         open_thinking_stream=open_thinking_stream,
+        download_image=download_image,
         in_flight=in_flight,
     )
 
@@ -114,6 +130,7 @@ async def test_a_tool_call_updates_its_task_from_in_progress_to_complete() -> No
     settings = build_test_settings()
     open_thinking_stream = FakeOpenThinkingStream()
     set_status = FakeSetStatus()
+    download_image = FakeDownloadImage()
     in_flight: InFlightTurns = {}
     event = {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "I like tea"}
 
@@ -123,6 +140,7 @@ async def test_a_tool_call_updates_its_task_from_in_progress_to_complete() -> No
         settings=settings,
         set_status=set_status,
         open_thinking_stream=open_thinking_stream,
+        download_image=download_image,
         in_flight=in_flight,
     )
 
@@ -150,6 +168,7 @@ async def test_web_search_task_card_gets_titles_as_output_and_urls_as_sources() 
     settings = build_test_settings()
     open_thinking_stream = FakeOpenThinkingStream()
     set_status = FakeSetStatus()
+    download_image = FakeDownloadImage()
     in_flight: InFlightTurns = {}
     event = {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "weather?"}
 
@@ -159,6 +178,7 @@ async def test_web_search_task_card_gets_titles_as_output_and_urls_as_sources() 
         settings=settings,
         set_status=set_status,
         open_thinking_stream=open_thinking_stream,
+        download_image=download_image,
         in_flight=in_flight,
     )
 
@@ -180,6 +200,7 @@ async def test_multiple_different_tool_calls_each_get_their_own_stacked_task_car
     settings = build_test_settings()
     open_thinking_stream = FakeOpenThinkingStream()
     set_status = FakeSetStatus()
+    download_image = FakeDownloadImage()
     in_flight: InFlightTurns = {}
     event = {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "hi"}
 
@@ -189,6 +210,7 @@ async def test_multiple_different_tool_calls_each_get_their_own_stacked_task_car
         settings=settings,
         set_status=set_status,
         open_thinking_stream=open_thinking_stream,
+        download_image=download_image,
         in_flight=in_flight,
     )
 
@@ -202,6 +224,7 @@ async def test_ignores_dms_from_non_whitelisted_users() -> None:
     settings = build_test_settings()
     open_thinking_stream = FakeOpenThinkingStream()
     set_status = FakeSetStatus()
+    download_image = FakeDownloadImage()
     in_flight: InFlightTurns = {}
     event = {"user": "U_STRANGER", "channel": "D1", "ts": "111.1", "text": "hi"}
 
@@ -211,6 +234,7 @@ async def test_ignores_dms_from_non_whitelisted_users() -> None:
         settings=settings,
         set_status=set_status,
         open_thinking_stream=open_thinking_stream,
+        download_image=download_image,
         in_flight=in_flight,
     )
 
@@ -228,6 +252,7 @@ async def test_replies_with_a_short_error_message_when_the_graph_raises(monkeypa
     settings = build_test_settings()
     open_thinking_stream = FakeOpenThinkingStream()
     set_status = FakeSetStatus()
+    download_image = FakeDownloadImage()
     in_flight: InFlightTurns = {}
     event = {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "hi"}
 
@@ -237,6 +262,7 @@ async def test_replies_with_a_short_error_message_when_the_graph_raises(monkeypa
         settings=settings,
         set_status=set_status,
         open_thinking_stream=open_thinking_stream,
+        download_image=download_image,
         in_flight=in_flight,
     )
 
@@ -253,6 +279,7 @@ async def test_replies_within_the_same_slack_thread_continue_the_same_conversati
     settings = build_test_settings()
     open_thinking_stream = FakeOpenThinkingStream()
     set_status = FakeSetStatus()
+    download_image = FakeDownloadImage()
     in_flight: InFlightTurns = {}
     first_event = {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "I like tea"}
     reply_event = {
@@ -269,6 +296,7 @@ async def test_replies_within_the_same_slack_thread_continue_the_same_conversati
         settings=settings,
         set_status=set_status,
         open_thinking_stream=open_thinking_stream,
+        download_image=download_image,
         in_flight=in_flight,
     )
     await handle_slack_message(
@@ -277,6 +305,7 @@ async def test_replies_within_the_same_slack_thread_continue_the_same_conversati
         settings=settings,
         set_status=set_status,
         open_thinking_stream=open_thinking_stream,
+        download_image=download_image,
         in_flight=in_flight,
     )
 
@@ -293,6 +322,7 @@ async def test_a_followup_message_cancels_the_in_flight_turn_and_starts_a_fresh_
     settings = build_test_settings()
     open_thinking_stream = FakeOpenThinkingStream()
     set_status = FakeSetStatus()
+    download_image = FakeDownloadImage()
     in_flight: InFlightTurns = {}
     started = asyncio.Event()
     call_count = 0
@@ -326,6 +356,7 @@ async def test_a_followup_message_cancels_the_in_flight_turn_and_starts_a_fresh_
             settings=settings,
             set_status=set_status,
             open_thinking_stream=open_thinking_stream,
+            download_image=download_image,
             in_flight=in_flight,
         )
     )
@@ -337,6 +368,7 @@ async def test_a_followup_message_cancels_the_in_flight_turn_and_starts_a_fresh_
         settings=settings,
         set_status=set_status,
         open_thinking_stream=open_thinking_stream,
+        download_image=download_image,
         in_flight=in_flight,
     )
     await first_turn
@@ -357,6 +389,7 @@ async def test_in_flight_turns_for_different_conversations_do_not_interfere() ->
     settings = build_test_settings()
     open_thinking_stream = FakeOpenThinkingStream()
     set_status = FakeSetStatus()
+    download_image = FakeDownloadImage()
     in_flight: InFlightTurns = {}
     started = asyncio.Event()
     hold = asyncio.Event()
@@ -391,6 +424,7 @@ async def test_in_flight_turns_for_different_conversations_do_not_interfere() ->
             settings=settings,
             set_status=set_status,
             open_thinking_stream=open_thinking_stream,
+            download_image=download_image,
             in_flight=in_flight,
         )
     )
@@ -402,6 +436,7 @@ async def test_in_flight_turns_for_different_conversations_do_not_interfere() ->
         settings=settings,
         set_status=set_status,
         open_thinking_stream=open_thinking_stream,
+        download_image=download_image,
         in_flight=in_flight,
     )
 
@@ -413,6 +448,265 @@ async def test_in_flight_turns_for_different_conversations_do_not_interfere() ->
 
     assert open_thinking_stream.streams[0].finished == "reply for 111.1"
     assert in_flight == {}
+
+
+async def test_a_message_with_no_files_never_calls_the_downloader() -> None:
+    graph = build_test_graph([AIMessage(content="Hello! How can I help?")])
+    settings = build_test_settings()
+    open_thinking_stream = FakeOpenThinkingStream()
+    set_status = FakeSetStatus()
+    download_image = FakeDownloadImage()
+    in_flight: InFlightTurns = {}
+    event = {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "hi"}
+
+    await handle_slack_message(
+        event,
+        graph=graph,
+        settings=settings,
+        set_status=set_status,
+        open_thinking_stream=open_thinking_stream,
+        download_image=download_image,
+        in_flight=in_flight,
+    )
+
+    assert download_image.calls == []
+
+
+async def test_an_image_attachment_is_downloaded_and_analyzed_as_a_task_card() -> None:
+    graph = build_test_graph([AIMessage(content="unused")])
+    received_inputs: list[dict] = []
+
+    async def fake_astream_events(input: dict, config: dict, **kwargs: object):
+        received_inputs.append(input)
+        yield {"event": "on_chain_start", "name": "analyze_images", "run_id": "run-1"}
+        yield {"event": "on_chain_end", "name": "analyze_images", "run_id": "run-1"}
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+    graph.astream_events = fake_astream_events  # type: ignore[method-assign]
+    graph.aget_state = _fake_aget_state("It's a cat photo.")  # type: ignore[method-assign]
+    settings = build_test_settings()
+    open_thinking_stream = FakeOpenThinkingStream()
+    set_status = FakeSetStatus()
+    download_image = FakeDownloadImage({"F1": b"\x89PNG"})
+    in_flight: InFlightTurns = {}
+    image_file = {"id": "F1", "mimetype": "image/png", "url_private": "https://x/1.png"}
+    event = {
+        "user": "U_ALLOWED",
+        "channel": "D1",
+        "ts": "111.1",
+        "text": "what is this?",
+        "files": [image_file],
+    }
+
+    await handle_slack_message(
+        event,
+        graph=graph,
+        settings=settings,
+        set_status=set_status,
+        open_thinking_stream=open_thinking_stream,
+        download_image=download_image,
+        in_flight=in_flight,
+    )
+
+    assert download_image.calls == [image_file]
+    sent_content = received_inputs[0]["messages"][0].content
+    assert sent_content[0] == {"type": "text", "text": "what is this?"}
+    assert sent_content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    (stream,) = open_thinking_stream.streams
+    assert stream.updates == [
+        ("run-1", "🖼️ 正在讀取圖片…", "in_progress", None, None),
+        ("run-1", "🖼️ 分析圖片", "complete", None, None),
+    ]
+
+
+async def test_only_the_first_four_image_files_are_downloaded() -> None:
+    graph = build_test_graph([AIMessage(content="Hello! How can I help?")])
+    settings = build_test_settings()
+    open_thinking_stream = FakeOpenThinkingStream()
+    set_status = FakeSetStatus()
+    files = [{"id": str(i), "mimetype": "image/png", "url_private": "x"} for i in range(6)]
+    download_image = FakeDownloadImage({str(i): b"\x89PNG" for i in range(6)})
+    in_flight: InFlightTurns = {}
+    event = {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "hi", "files": files}
+
+    await handle_slack_message(
+        event,
+        graph=graph,
+        settings=settings,
+        set_status=set_status,
+        open_thinking_stream=open_thinking_stream,
+        download_image=download_image,
+        in_flight=in_flight,
+    )
+
+    assert [f["id"] for f in download_image.calls] == ["0", "1", "2", "3"]
+
+
+async def test_non_image_file_attachments_are_ignored() -> None:
+    graph = build_test_graph([AIMessage(content="Hello! How can I help?")])
+    settings = build_test_settings()
+    open_thinking_stream = FakeOpenThinkingStream()
+    set_status = FakeSetStatus()
+    download_image = FakeDownloadImage()
+    in_flight: InFlightTurns = {}
+    event = {
+        "user": "U_ALLOWED",
+        "channel": "D1",
+        "ts": "111.1",
+        "text": "here's a doc",
+        "files": [{"id": "F1", "mimetype": "application/pdf", "url_private": "https://x/1.pdf"}],
+    }
+
+    await handle_slack_message(
+        event,
+        graph=graph,
+        settings=settings,
+        set_status=set_status,
+        open_thinking_stream=open_thinking_stream,
+        download_image=download_image,
+        in_flight=in_flight,
+    )
+
+    assert download_image.calls == []
+
+
+async def test_a_failed_image_download_still_lets_the_turn_proceed() -> None:
+    graph = build_test_graph([AIMessage(content="Hello! How can I help?")])
+    received_inputs: list[dict] = []
+
+    async def fake_astream_events(input: dict, config: dict, **kwargs: object):
+        received_inputs.append(input)
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+    graph.astream_events = fake_astream_events  # type: ignore[method-assign]
+    graph.aget_state = _fake_aget_state("Got it.")  # type: ignore[method-assign]
+    settings = build_test_settings()
+    open_thinking_stream = FakeOpenThinkingStream()
+    set_status = FakeSetStatus()
+    download_image = FakeDownloadImage()  # no results configured -> every download fails
+    in_flight: InFlightTurns = {}
+    event = {
+        "user": "U_ALLOWED",
+        "channel": "D1",
+        "ts": "111.1",
+        "text": "look at this",
+        "files": [{"id": "F1", "mimetype": "image/png", "url_private": "https://x/1.png"}],
+    }
+
+    await handle_slack_message(
+        event,
+        graph=graph,
+        settings=settings,
+        set_status=set_status,
+        open_thinking_stream=open_thinking_stream,
+        download_image=download_image,
+        in_flight=in_flight,
+    )
+
+    sent_content = received_inputs[0]["messages"][0].content
+    assert sent_content == "look at this\n\n[1 張圖片無法讀取]"
+    (stream,) = open_thinking_stream.streams
+    assert stream.finished == "Got it."
+
+
+async def test_some_images_failing_to_download_still_analyzes_the_rest() -> None:
+    graph = build_test_graph([AIMessage(content="unused")])
+    received_inputs: list[dict] = []
+
+    async def fake_astream_events(input: dict, config: dict, **kwargs: object):
+        received_inputs.append(input)
+        yield {"event": "on_chain_start", "name": "analyze_images", "run_id": "run-1"}
+        yield {"event": "on_chain_end", "name": "analyze_images", "run_id": "run-1"}
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+    graph.astream_events = fake_astream_events  # type: ignore[method-assign]
+    graph.aget_state = _fake_aget_state("Two cats.")  # type: ignore[method-assign]
+    settings = build_test_settings()
+    open_thinking_stream = FakeOpenThinkingStream()
+    set_status = FakeSetStatus()
+    download_image = FakeDownloadImage({"F1": b"\x89PNG"})  # F2 has no configured result
+    in_flight: InFlightTurns = {}
+    event = {
+        "user": "U_ALLOWED",
+        "channel": "D1",
+        "ts": "111.1",
+        "text": "what are these?",
+        "files": [
+            {"id": "F1", "mimetype": "image/png", "url_private": "https://x/1.png"},
+            {"id": "F2", "mimetype": "image/png", "url_private": "https://x/2.png"},
+        ],
+    }
+
+    await handle_slack_message(
+        event,
+        graph=graph,
+        settings=settings,
+        set_status=set_status,
+        open_thinking_stream=open_thinking_stream,
+        download_image=download_image,
+        in_flight=in_flight,
+    )
+
+    sent_content = received_inputs[0]["messages"][0].content
+    assert sent_content[0] == {
+        "type": "text",
+        "text": "what are these?\n\n[另有 1 張圖片無法讀取]",
+    }
+    assert len([b for b in sent_content if b.get("type") == "image_url"]) == 1
+
+
+async def test_an_image_task_card_and_a_tool_task_card_stack_in_the_same_turn() -> None:
+    graph = build_test_graph([AIMessage(content="unused")])
+
+    async def fake_astream_events(input: dict, config: dict, **kwargs: object):
+        yield {"event": "on_chain_start", "name": "analyze_images", "run_id": "run-1"}
+        yield {"event": "on_chain_end", "name": "analyze_images", "run_id": "run-1"}
+        yield {"event": "on_tool_start", "name": "web_search", "run_id": "run-2"}
+        yield {
+            "event": "on_tool_end",
+            "name": "web_search",
+            "run_id": "run-2",
+            "data": {
+                "output": ToolMessage(
+                    content="Weather: Sunny (http://example.com)",
+                    name="web_search",
+                    tool_call_id="run-2",
+                    artifact=[{"title": "Weather", "url": "http://example.com"}],
+                )
+            },
+        }
+
+    graph.astream_events = fake_astream_events  # type: ignore[method-assign]
+    graph.aget_state = _fake_aget_state("It's sunny in the photo's location.")  # type: ignore[method-assign]
+    settings = build_test_settings()
+    open_thinking_stream = FakeOpenThinkingStream()
+    set_status = FakeSetStatus()
+    download_image = FakeDownloadImage({"F1": b"\x89PNG"})
+    in_flight: InFlightTurns = {}
+    event = {
+        "user": "U_ALLOWED",
+        "channel": "D1",
+        "ts": "111.1",
+        "text": "where is this and what's the weather?",
+        "files": [{"id": "F1", "mimetype": "image/png", "url_private": "https://x/1.png"}],
+    }
+
+    await handle_slack_message(
+        event,
+        graph=graph,
+        settings=settings,
+        set_status=set_status,
+        open_thinking_stream=open_thinking_stream,
+        download_image=download_image,
+        in_flight=in_flight,
+    )
+
+    (stream,) = open_thinking_stream.streams
+    task_ids_in_order = [u[0] for u in stream.updates]
+    assert task_ids_in_order == ["run-1", "run-1", "run-2", "run-2"]
 
 
 async def test_open_thinking_stream_posts_no_placeholder_content_up_front() -> None:
