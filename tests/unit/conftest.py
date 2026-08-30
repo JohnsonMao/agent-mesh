@@ -70,6 +70,7 @@ def build_test_settings(**overrides: Any) -> Settings:
         "slack_bot_token": "xoxb-test",
         "slack_app_token": "xapp-test",
         "slack_allowed_user_id": "U_ALLOWED",
+        "disable_skill_scripts": False,
     }
     defaults.update(overrides)
     return Settings(**defaults)

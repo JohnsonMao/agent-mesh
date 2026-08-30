@@ -26,6 +26,7 @@ class Settings:
     slack_bot_token: str
     slack_app_token: str
     slack_allowed_user_id: str
+    disable_skill_scripts: bool = False
 
 
 def load_settings() -> Settings:
@@ -48,4 +49,5 @@ def load_settings() -> Settings:
         slack_bot_token=os.environ.get("SLACK_BOT_TOKEN", ""),
         slack_app_token=os.environ.get("SLACK_APP_TOKEN", ""),
         slack_allowed_user_id=os.environ.get("SLACK_ALLOWED_USER_ID", ""),
+        disable_skill_scripts=os.environ.get("DISABLE_SKILL_SCRIPTS", "false").lower() == "true",
     )

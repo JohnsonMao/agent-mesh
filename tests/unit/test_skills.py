@@ -52,3 +52,30 @@ def test_load_skills_raises_when_a_frontmatter_field_is_missing(tmp_path) -> Non
 
     with pytest.raises(ValueError, match="description"):
         load_skills(str(tmp_path))
+
+
+def test_load_skills_records_root_and_empty_resources_for_a_single_file_skill(tmp_path) -> None:
+    _write_skill(
+        tmp_path, "greeting", name="greeting", description="desc", body="body"
+    )
+
+    skills = load_skills(str(tmp_path))
+
+    assert skills[0].root == tmp_path / "greeting"
+    assert skills[0].resources == ()
+
+
+def test_load_skills_lists_reference_and_script_files_as_resources(tmp_path) -> None:
+    _write_skill(tmp_path, "text-stats", name="text-stats", description="desc", body="body")
+    skill_dir = tmp_path / "text-stats"
+    (skill_dir / "references").mkdir()
+    (skill_dir / "references" / "output-format.md").write_text("format")
+    (skill_dir / "scripts").mkdir()
+    (skill_dir / "scripts" / "count_stats.py").write_text("print('hi')")
+
+    skills = load_skills(str(tmp_path))
+
+    assert skills[0].resources == (
+        "references/output-format.md",
+        "scripts/count_stats.py",
+    )

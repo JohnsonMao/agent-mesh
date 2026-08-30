@@ -1,5 +1,7 @@
-"""Tools the Assistant may call: explicit long-term Memory and web search."""
+"""Tools the Assistant may call: explicit long-term Memory, web search, and Skills."""
 
+import subprocess
+from pathlib import Path
 from uuid import uuid4
 
 from ddgs import DDGS
@@ -11,6 +13,9 @@ from config import Settings
 from llm import build_llm
 from long_term_memory import memory_namespace
 from skills import Skill
+
+SKILL_SCRIPT_TIMEOUT_SECONDS = 30
+SKILL_SCRIPT_OUTPUT_LIMIT = 4000
 
 MEMORY_MERGE_PROMPT = (
     "You maintain a personal assistant's long-term memory. Merge the new fact "
@@ -35,6 +40,21 @@ class WebSearchInput(BaseModel):
 
 class LoadSkillInput(BaseModel):
     name: str = Field(description="The name of the skill to load.")
+
+
+class ReadSkillResourceInput(BaseModel):
+    name: str = Field(description="The name of the skill the resource belongs to.")
+    relative_path: str = Field(
+        description="Path to the resource file, relative to the skill's directory."
+    )
+
+
+class RunSkillScriptInput(BaseModel):
+    name: str = Field(description="The name of the skill the script belongs to.")
+    script_path: str = Field(
+        description="Path to the script under the skill's scripts/ directory."
+    )
+    args: list[str] = Field(default_factory=list, description="Command-line arguments.")
 
 
 def merge_memory_content(settings: Settings, existing: str, new: str) -> str:
@@ -104,15 +124,83 @@ def make_load_skill(skills: list[Skill]) -> BaseTool:
         skill = skills_by_name.get(name)
         if skill is None:
             return f"No skill named '{name}' found."
-        return skill.body
+        if not skill.resources:
+            return skill.body
+        resource_list = "\n".join(f"- {resource}" for resource in skill.resources)
+        return f"{skill.body}\n\nAvailable files in this skill's directory:\n{resource_list}"
 
     return load_skill
 
 
+def _resolve_skill_path(skill: Skill, relative_path: str) -> Path:
+    """Resolve a path within a skill's directory, rejecting escapes via '..' or symlinks."""
+    root = skill.root.resolve()
+    resolved = (skill.root / relative_path).resolve()
+    if resolved != root and root not in resolved.parents:
+        raise ValueError(f"Path '{relative_path}' is outside skill '{skill.name}'")
+    return resolved
+
+
+def make_read_skill_resource(skills: list[Skill]) -> BaseTool:
+    skills_by_name = {skill.name: skill for skill in skills}
+
+    @tool("read_skill_resource", args_schema=ReadSkillResourceInput)
+    def read_skill_resource(name: str, relative_path: str) -> str:
+        """Read a file (e.g. under references/ or scripts/) from a Skill's directory."""
+        skill = skills_by_name.get(name)
+        if skill is None:
+            return f"No skill named '{name}' found."
+        try:
+            path = _resolve_skill_path(skill, relative_path)
+        except ValueError as error:
+            return str(error)
+        if not path.is_file():
+            return f"No file '{relative_path}' found in skill '{name}'."
+        return path.read_text()
+
+    return read_skill_resource
+
+
+def make_run_skill_script(skills: list[Skill]) -> BaseTool:
+    skills_by_name = {skill.name: skill for skill in skills}
+
+    @tool("run_skill_script", args_schema=RunSkillScriptInput)
+    def run_skill_script(name: str, script_path: str, args: list[str]) -> str:
+        """Run a Python script (e.g. under scripts/) from a Skill's directory."""
+        skill = skills_by_name.get(name)
+        if skill is None:
+            return f"No skill named '{name}' found."
+        try:
+            path = _resolve_skill_path(skill, script_path)
+        except ValueError as error:
+            return str(error)
+        if not path.is_file():
+            return f"No script '{script_path}' found in skill '{name}'."
+        try:
+            result = subprocess.run(
+                ["uv", "run", "python", str(path), *args],
+                capture_output=True,
+                text=True,
+                timeout=SKILL_SCRIPT_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            return f"Script '{script_path}' timed out after {SKILL_SCRIPT_TIMEOUT_SECONDS}s."
+        output = result.stdout + result.stderr
+        if len(output) > SKILL_SCRIPT_OUTPUT_LIMIT:
+            output = output[:SKILL_SCRIPT_OUTPUT_LIMIT] + "\n[output truncated]"
+        return f"Exit code: {result.returncode}\n{output}"
+
+    return run_skill_script
+
+
 def make_tools(settings: Settings, skills: list[Skill]) -> list[BaseTool]:
-    return [
+    tools = [
         make_save_memory(settings),
         make_recall_memory(settings),
         web_search,
         make_load_skill(skills),
+        make_read_skill_resource(skills),
     ]
+    if not settings.disable_skill_scripts:
+        tools.append(make_run_skill_script(skills))
+    return tools

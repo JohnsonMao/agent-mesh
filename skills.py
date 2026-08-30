@@ -9,6 +9,8 @@ class Skill:
     name: str
     description: str
     body: str
+    root: Path
+    resources: tuple[str, ...]
 
 
 def _parse_skill_md(text: str) -> tuple[dict[str, str], str]:
@@ -20,6 +22,16 @@ def _parse_skill_md(text: str) -> tuple[dict[str, str], str]:
     return frontmatter, body.strip()
 
 
+def _skill_resources(skill_dir: Path) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            str(path.relative_to(skill_dir))
+            for path in skill_dir.rglob("*")
+            if path.is_file() and path.name != "SKILL.md"
+        )
+    )
+
+
 def load_skills(skills_dir: str) -> list[Skill]:
     root = Path(skills_dir)
     if not root.is_dir():
@@ -28,7 +40,8 @@ def load_skills(skills_dir: str) -> list[Skill]:
     skills = []
     seen_names: set[str] = set()
     for skill_path in sorted(root.glob("*/SKILL.md")):
-        dir_name = skill_path.parent.name
+        skill_dir = skill_path.parent
+        dir_name = skill_dir.name
         frontmatter, body = _parse_skill_md(skill_path.read_text())
         for field in ("name", "description"):
             if field not in frontmatter:
@@ -42,5 +55,13 @@ def load_skills(skills_dir: str) -> list[Skill]:
             raise ValueError(
                 f"Skill directory '{dir_name}' declares name '{name}'; they must match"
             )
-        skills.append(Skill(name=name, description=description, body=body))
+        skills.append(
+            Skill(
+                name=name,
+                description=description,
+                body=body,
+                root=skill_dir,
+                resources=_skill_resources(skill_dir),
+            )
+        )
     return skills
