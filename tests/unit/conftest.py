@@ -5,13 +5,16 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from langchain_core.embeddings import Embeddings
+from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import IndexConfig
 from langgraph.store.memory import InMemoryStore
+from pydantic import Field
 
 from config import Settings
 from main import build_graph
@@ -79,12 +82,29 @@ def build_test_store() -> InMemoryStore:
 
 
 def build_test_graph(
-    responses: list[AIMessage], settings: Settings | None = None
+    responses: list[AIMessage],
+    settings: Settings | None = None,
+    llm: FakeToolChatModel | None = None,
 ) -> CompiledStateGraph:
     settings = settings or build_test_settings()
-    llm = FakeToolChatModel(messages=iter(responses))
+    llm = llm or FakeToolChatModel(messages=iter(responses))
     skills = load_skills(settings.skills_dir)
     tools = make_tools(settings, skills)
     checkpointer = InMemorySaver()
     store = build_test_store()
     return build_graph(llm, tools, checkpointer, store, skills)
+
+
+class RecordingChatModel(FakeToolChatModel):
+    """Records each invoke() call's input messages, to assert what the model actually saw."""
+
+    received_messages: list[list[BaseMessage]] = Field(default_factory=list)
+
+    def invoke(
+        self,
+        input: LanguageModelInput,
+        config: RunnableConfig | None = None,
+        **kwargs: Any,
+    ) -> AIMessage:
+        self.received_messages.append(list(input))  # type: ignore[arg-type]
+        return super().invoke(input, config, **kwargs)

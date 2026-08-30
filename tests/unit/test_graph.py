@@ -1,11 +1,15 @@
 """Primary seam: the graph's app.invoke() boundary (conversation + tool-call loop)."""
 
-from conftest import build_test_graph, build_test_settings
+import re
+
+from conftest import RecordingChatModel, build_test_graph, build_test_settings
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 import tools as tools_module
 from long_term_memory import memory_namespace
-from main import open_store
+from main import SENT_AT_KEY, current_sent_at, open_store
+
+SENT_AT_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
 
 
 def test_assistant_replies_without_calling_any_tool() -> None:
@@ -126,3 +130,46 @@ def test_open_store_uses_autocommit_mode_for_sqlite_transactions(tmp_path) -> No
 
     assert len(matches) == 1
     assert matches[0].value["content"] == "User likes tea"
+
+
+def test_every_message_produced_during_a_turn_is_stamped_with_a_sent_at_timestamp() -> None:
+    tool_call = {"name": "save_memory", "args": {"content": "User likes tea"}, "id": "call-1"}
+    responses = [
+        AIMessage(content="", tool_calls=[tool_call]),
+        AIMessage(content="Got it, I'll remember that."),
+    ]
+    graph = build_test_graph(responses)
+    config = {"configurable": {"thread_id": "t1", "user_id": "u1"}}
+    human_message = HumanMessage(
+        content="I like tea", additional_kwargs={SENT_AT_KEY: current_sent_at()}
+    )
+
+    result = graph.invoke({"messages": [human_message]}, config)
+
+    for message in result["messages"]:
+        assert SENT_AT_PATTERN.match(message.additional_kwargs[SENT_AT_KEY])
+
+
+def test_a_message_without_a_sent_at_timestamp_is_passed_to_the_model_unprefixed() -> None:
+    model = RecordingChatModel(messages=iter([AIMessage(content="ok")]))
+    graph = build_test_graph([], llm=model)
+    config = {"configurable": {"thread_id": "t1", "user_id": "u1"}}
+
+    graph.invoke({"messages": [HumanMessage(content="hi")]}, config)
+
+    received_human = next(m for m in model.received_messages[-1] if isinstance(m, HumanMessage))
+    assert received_human.content == "hi"
+
+
+def test_a_message_with_a_sent_at_timestamp_is_prefixed_for_the_model_but_stored_clean() -> None:
+    model = RecordingChatModel(messages=iter([AIMessage(content="ok")]))
+    graph = build_test_graph([], llm=model)
+    config = {"configurable": {"thread_id": "t1", "user_id": "u1"}}
+    human_message = HumanMessage(content="hi", additional_kwargs={SENT_AT_KEY: "2026-08-28 09:00"})
+
+    graph.invoke({"messages": [human_message]}, config)
+
+    received_human = next(m for m in model.received_messages[-1] if isinstance(m, HumanMessage))
+    assert received_human.content == "[2026-08-28 09:00] hi"
+    stored_human = graph.get_state(config).values["messages"][0]
+    assert stored_human.content == "hi"

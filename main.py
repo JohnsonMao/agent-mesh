@@ -8,7 +8,7 @@ from pathlib import Path
 
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -29,15 +29,24 @@ from tools import make_tools
 # This assistant is designed for a single person; there is no multi-user concept.
 USER_ID = "the-user"
 
-SYSTEM_PROMPT_TEMPLATE = (
+# Key under additional_kwargs holding the real wall-clock time a message was produced,
+# so the model can tell how long ago an older message in the Conversation was sent.
+SENT_AT_KEY = "sent_at"
+TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M"
+
+SYSTEM_PROMPT = (
     "You are a personal AI assistant. You may call the recall_memory tool if "
     "relevant saved facts would help you answer, and the save_memory tool when "
     "you judge a fact is worth remembering long-term. You may call the "
     "web_search tool when you need current or unknown information. Only call a "
     "tool when it genuinely helps the current turn; never take action the user "
     "didn't ask for.\n\n"
-    "Current date and time: {now}. Use this as the basis for any relative date "
-    "(e.g. \"tomorrow\", \"today\") instead of dates found in tool results."
+    "Some messages below are prefixed with a timestamp like "
+    '"[YYYY-MM-DD HH:MM] ". Treat the timestamp on the most recent message as the '
+    "current date and time, and use each message's own timestamp to interpret "
+    'relative dates (e.g. "tomorrow", "today") mentioned in that message instead '
+    "of dates found in tool results. Messages without a timestamp prefix have no "
+    "time information available."
 )
 
 SKILLS_PROMPT_SECTION_TEMPLATE = (
@@ -46,8 +55,19 @@ SKILLS_PROMPT_SECTION_TEMPLATE = (
 )
 
 
+def current_sent_at() -> str:
+    return datetime.now().strftime(TIMESTAMP_FORMAT)
+
+
+def _with_timestamp_prefix(message: BaseMessage) -> BaseMessage:
+    sent_at = message.additional_kwargs.get(SENT_AT_KEY)
+    if not sent_at or not isinstance(message.content, str):
+        return message
+    return message.model_copy(update={"content": f"[{sent_at}] {message.content}"})
+
+
 def _system_prompt(skills: list[Skill]) -> str:
-    prompt = SYSTEM_PROMPT_TEMPLATE.format(now=datetime.now().strftime("%Y-%m-%d (%A) %H:%M"))
+    prompt = SYSTEM_PROMPT
     if skills:
         skill_lines = "\n".join(
             f"- {skill.name}: {skill.description}" for skill in sorted(skills, key=lambda s: s.name)
@@ -61,11 +81,28 @@ def call_model(
     skills: list[Skill],
 ) -> Callable[[MessagesState, RunnableConfig], MessagesState]:
     def _call_model(state: MessagesState, config: RunnableConfig) -> MessagesState:
-        messages = [SystemMessage(content=_system_prompt(skills)), *state["messages"]]
+        messages = [
+            SystemMessage(content=_system_prompt(skills)),
+            *(_with_timestamp_prefix(message) for message in state["messages"]),
+        ]
         response = llm_with_tools.invoke(messages, config)
+        response.additional_kwargs[SENT_AT_KEY] = current_sent_at()
         return {"messages": [response]}
 
     return _call_model
+
+
+def _tools_node(tools: list[BaseTool]) -> Callable[[MessagesState, RunnableConfig], MessagesState]:
+    tool_node = ToolNode(tools)
+
+    def _run_tools(state: MessagesState, config: RunnableConfig) -> MessagesState:
+        result: MessagesState = tool_node.invoke(state, config)
+        now = current_sent_at()
+        for message in result["messages"]:
+            message.additional_kwargs.setdefault(SENT_AT_KEY, now)
+        return result
+
+    return _run_tools
 
 
 def build_graph(
@@ -78,7 +115,7 @@ def build_graph(
     llm_with_tools = llm.bind_tools(tools)
     graph = StateGraph(MessagesState)
     graph.add_node("model", call_model(llm_with_tools, skills or []))  # type: ignore[call-overload]
-    graph.add_node("tools", ToolNode(tools))
+    graph.add_node("tools", _tools_node(tools))  # type: ignore[call-overload]
     graph.set_entry_point("model")
     graph.add_conditional_edges("model", tools_condition)
     graph.add_edge("tools", "model")
@@ -131,7 +168,10 @@ def main() -> None:
                 break
             if not user_input:
                 continue
-            result = app.invoke({"messages": [HumanMessage(content=user_input)]}, config)
+            human_message = HumanMessage(
+                content=user_input, additional_kwargs={SENT_AT_KEY: current_sent_at()}
+            )
+            result = app.invoke({"messages": [human_message]}, config)
             reply = result["messages"][-1]
             print(f"Assistant: {reply.content}")
 

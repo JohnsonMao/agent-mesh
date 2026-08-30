@@ -15,7 +15,7 @@ from slack_bolt.async_app import AsyncApp
 
 from config import Settings, load_settings
 from llm import build_llm
-from main import USER_ID, build_graph, open_store
+from main import SENT_AT_KEY, USER_ID, build_graph, current_sent_at, open_store
 from skills import load_skills
 from slack_status import (
     build_output_summary,
@@ -48,9 +48,8 @@ async def _run_turn(
 ) -> None:
     # Stream (rather than a single ainvoke) so each Thinking Step (see CONTEXT.md) -- a
     # tool call starting or finishing -- can be reflected as a Task Card update live.
-    async for event in graph.astream_events(
-        {"messages": [HumanMessage(content=text)]}, config, version="v2"
-    ):
+    human_message = HumanMessage(content=text, additional_kwargs={SENT_AT_KEY: current_sent_at()})
+    async for event in graph.astream_events({"messages": [human_message]}, config, version="v2"):
         tool_name = event.get("name")
         if event["event"] == "on_tool_start":
             await stream.update_task(event["run_id"], tool_live_label(tool_name), "in_progress")
