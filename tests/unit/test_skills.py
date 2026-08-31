@@ -55,9 +55,7 @@ def test_load_skills_raises_when_a_frontmatter_field_is_missing(tmp_path) -> Non
 
 
 def test_load_skills_records_root_and_empty_resources_for_a_single_file_skill(tmp_path) -> None:
-    _write_skill(
-        tmp_path, "greeting", name="greeting", description="desc", body="body"
-    )
+    _write_skill(tmp_path, "greeting", name="greeting", description="desc", body="body")
 
     skills = load_skills(str(tmp_path))
 

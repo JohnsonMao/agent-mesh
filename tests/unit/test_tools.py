@@ -56,9 +56,7 @@ def test_read_skill_resource_rejects_path_traversal(tmp_path) -> None:
     (tmp_path / "text-stats").mkdir()
     read_skill_resource = tools.make_read_skill_resource([skill])
 
-    result = read_skill_resource.invoke(
-        {"name": "text-stats", "relative_path": "../secret.txt"}
-    )
+    result = read_skill_resource.invoke({"name": "text-stats", "relative_path": "../secret.txt"})
 
     assert "outside skill" in result
 

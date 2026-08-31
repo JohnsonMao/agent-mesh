@@ -8,6 +8,10 @@ from config import Settings
 
 
 def build_llm(settings: Settings) -> BaseChatModel:
+    extra_body = {
+        "reasoning_effort": "none",
+    }
+
     return init_chat_model(
         model=settings.lm_studio_model,
         model_provider=settings.model_provider,
@@ -17,4 +21,5 @@ def build_llm(settings: Settings) -> BaseChatModel:
         max_tokens=settings.model_max_tokens,
         frequency_penalty=settings.model_frequency_penalty,
         presence_penalty=settings.model_presence_penalty,
+        extra_body=extra_body,
     )

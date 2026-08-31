@@ -51,9 +51,7 @@ class ReadSkillResourceInput(BaseModel):
 
 class RunSkillScriptInput(BaseModel):
     name: str = Field(description="The name of the skill the script belongs to.")
-    script_path: str = Field(
-        description="Path to the script under the skill's scripts/ directory."
-    )
+    script_path: str = Field(description="Path to the script under the skill's scripts/ directory.")
     args: list[str] = Field(default_factory=list, description="Command-line arguments.")
 
 
