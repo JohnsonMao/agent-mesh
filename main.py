@@ -3,7 +3,7 @@
 import sqlite3
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from langchain_core.language_models import LanguageModelInput
@@ -32,7 +32,7 @@ USER_ID = "the-user"
 # Key under additional_kwargs holding the real wall-clock time a message was produced,
 # so the model can tell how long ago an older message in the Conversation was sent.
 SENT_AT_KEY = "sent_at"
-TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M"
+TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%f"
 
 SYSTEM_PROMPT = (
     "You are a personal AI assistant. You may call the recall_memory tool if "
@@ -41,12 +41,13 @@ SYSTEM_PROMPT = (
     "web_search tool when you need current or unknown information. Only call a "
     "tool when it genuinely helps the current turn; never take action the user "
     "didn't ask for.\n\n"
-    "Some messages below are prefixed with a timestamp like "
-    '"[YYYY-MM-DD HH:MM] ". Treat the timestamp on the most recent message as the '
-    "current date and time, and use each message's own timestamp to interpret "
-    'relative dates (e.g. "tomorrow", "today") mentioned in that message instead '
-    "of dates found in tool results. Messages without a timestamp prefix have no "
-    "time information available."
+    "User messages may include a timestamp formatted as "
+    '"<current_datetime>YYYY-MM-DDTHH:MM:SS.sssZ (Weekday)</current_datetime>" (ISO 8601 UTC). '
+    "Treat the timestamp on the most recent user message as the current date and time, "
+    "and use each user message's timestamp to interpret relative dates (e.g. \"tomorrow\", \"today\") "
+    "mentioned in that message instead of dates found in tool results. Messages without "
+    "a timestamp have no time information available.\n\n"
+    "Never output timestamps, <current_datetime> tags, or time prefixes in your replies."
 )
 
 SKILLS_PROMPT_SECTION_TEMPLATE = (
@@ -69,14 +70,28 @@ IMAGE_ANALYSIS_MARKER = "[圖片內容：{analysis}]"
 
 
 def current_sent_at() -> str:
-    return datetime.now().strftime(TIMESTAMP_FORMAT)
+    return datetime.now(timezone.utc).strftime(TIMESTAMP_FORMAT)[:-3] + "Z"
+
+
+def _format_datetime_tag(sent_at: str) -> str:
+    try:
+        dt = datetime.fromisoformat(sent_at.replace("Z", "+00:00"))
+        weekday = dt.strftime("%A")
+        return f"{sent_at} ({weekday})"
+    except ValueError:
+        return sent_at
 
 
 def _with_timestamp_prefix(message: BaseMessage) -> BaseMessage:
+    if not isinstance(message, HumanMessage):
+        return message
     sent_at = message.additional_kwargs.get(SENT_AT_KEY)
     if not sent_at or not isinstance(message.content, str):
         return message
-    return message.model_copy(update={"content": f"[{sent_at}] {message.content}"})
+    formatted_time = _format_datetime_tag(sent_at)
+    return message.model_copy(
+        update={"content": f"<current_datetime>{formatted_time}</current_datetime>\n{message.content}"}
+    )
 
 
 def _system_prompt(skills: list[Skill]) -> str:
