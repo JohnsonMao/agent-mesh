@@ -3,7 +3,7 @@
 import sqlite3
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from langchain_core.language_models import LanguageModelInput
@@ -44,7 +44,7 @@ SYSTEM_PROMPT = (
     "User messages may include a timestamp formatted as "
     '"<current_datetime>YYYY-MM-DDTHH:MM:SS.sssZ (Weekday)</current_datetime>" (ISO 8601 UTC). '
     "Treat the timestamp on the most recent user message as the current date and time, "
-    "and use each user message's timestamp to interpret relative dates (e.g. \"tomorrow\", \"today\") "
+    'and use each user message\'s timestamp to interpret relative dates (e.g. "tomorrow", "today") '
     "mentioned in that message instead of dates found in tool results. Messages without "
     "a timestamp have no time information available.\n\n"
     "Never output timestamps, <current_datetime> tags, or time prefixes in your replies."
@@ -70,7 +70,7 @@ IMAGE_ANALYSIS_MARKER = "[圖片內容：{analysis}]"
 
 
 def current_sent_at() -> str:
-    return datetime.now(timezone.utc).strftime(TIMESTAMP_FORMAT)[:-3] + "Z"
+    return datetime.now(UTC).strftime(TIMESTAMP_FORMAT)[:-3] + "Z"
 
 
 def _format_datetime_tag(sent_at: str) -> str:
@@ -90,7 +90,9 @@ def _with_timestamp_prefix(message: BaseMessage) -> BaseMessage:
         return message
     formatted_time = _format_datetime_tag(sent_at)
     return message.model_copy(
-        update={"content": f"<current_datetime>{formatted_time}</current_datetime>\n{message.content}"}
+        update={
+            "content": f"<current_datetime>{formatted_time}</current_datetime>\n{message.content}"
+        }
     )
 
 

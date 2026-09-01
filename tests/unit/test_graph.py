@@ -1,8 +1,7 @@
 """Primary seam: the graph's app.invoke() boundary (conversation + tool-call loop)."""
 
 import re
-
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from conftest import RecordingChatModel, build_test_graph, build_test_settings
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -135,7 +134,7 @@ def test_open_store_uses_autocommit_mode_for_sqlite_transactions(tmp_path) -> No
 
 
 def test_current_sent_at_returns_utc_iso8601_string_with_millisecond_precision() -> None:
-    expected_prefix = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M")[:15]
+    expected_prefix = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M")[:15]
     sent_at = current_sent_at()
     assert sent_at.startswith(expected_prefix)
     assert sent_at.endswith("Z")
@@ -171,7 +170,9 @@ def test_a_message_without_a_sent_at_timestamp_is_passed_to_the_model_unprefixed
     assert received_human.content == "hi"
 
 
-def test_a_human_message_with_a_sent_at_timestamp_is_wrapped_in_current_datetime_for_the_model_but_stored_clean() -> None:
+def test_a_human_message_with_a_sent_at_timestamp_is_wrapped_in_current_datetime_for_the_model_but_stored_clean() -> (
+    None
+):
     model = RecordingChatModel(messages=iter([AIMessage(content="ok")]))
     graph = build_test_graph([], llm=model)
     config = {"configurable": {"thread_id": "t1", "user_id": "u1"}}
@@ -190,17 +191,15 @@ def test_a_human_message_with_a_sent_at_timestamp_is_wrapped_in_current_datetime
     assert stored_human.content == "hi"
 
 
-def test_an_ai_message_with_a_sent_at_timestamp_is_passed_to_the_model_without_timestamp_tag() -> None:
+def test_an_ai_message_with_a_sent_at_timestamp_is_passed_to_the_model_without_timestamp_tag() -> (
+    None
+):
     model = RecordingChatModel(messages=iter([AIMessage(content="second turn response")]))
     graph = build_test_graph([], llm=model)
     config = {"configurable": {"thread_id": "t1", "user_id": "u1"}}
     history = [
-        HumanMessage(
-            content="hello", additional_kwargs={SENT_AT_KEY: "2026-08-28T08:55:00.000Z"}
-        ),
-        AIMessage(
-            content="hi there", additional_kwargs={SENT_AT_KEY: "2026-08-28T08:56:00.000Z"}
-        ),
+        HumanMessage(content="hello", additional_kwargs={SENT_AT_KEY: "2026-08-28T08:55:00.000Z"}),
+        AIMessage(content="hi there", additional_kwargs={SENT_AT_KEY: "2026-08-28T08:56:00.000Z"}),
         HumanMessage(
             content="follow up", additional_kwargs={SENT_AT_KEY: "2026-08-28T09:00:00.000Z"}
         ),
