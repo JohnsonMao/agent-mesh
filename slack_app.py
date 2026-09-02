@@ -4,19 +4,23 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from pathlib import Path
+from typing import cast
 
 import aiohttp
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
+from psycopg import AsyncConnection
+from psycopg.rows import DictRow
+from psycopg_pool import AsyncConnectionPool
 from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp
 
 from config import Settings, load_settings
 from llm import build_llm
-from main import SENT_AT_KEY, USER_ID, build_graph, current_sent_at, open_store
+from long_term_memory import DEFAULT_POOL_KWARGS, build_async_store
+from main import SENT_AT_KEY, USER_ID, build_graph, current_sent_at
 from skills import load_skills
 from slack_images import MessageContent, build_image_content, extract_image_files
 from slack_status import (
@@ -230,17 +234,23 @@ async def _run(graph: CompiledStateGraph, settings: Settings) -> None:
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = load_settings()
-    checkpoint_path = Path(settings.checkpoint_db_path)
-    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     llm = build_llm(settings)
     skills = load_skills(settings.skills_dir)
     tools = make_tools(settings, skills)
 
     async def _amain() -> None:
-        async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
-            with open_store(settings) as store:
-                graph = build_graph(llm, tools, checkpointer, store, skills)
-                await _run(graph, settings)
+        async with cast(
+            AsyncConnectionPool[AsyncConnection[DictRow]],
+            AsyncConnectionPool(
+                settings.database_url,
+                kwargs=DEFAULT_POOL_KWARGS,
+            ),
+        ) as pool:
+            checkpointer = AsyncPostgresSaver(pool)
+            await checkpointer.setup()
+            store = await build_async_store(pool, settings)
+            graph = build_graph(llm, tools, checkpointer, store, skills)
+            await _run(graph, settings)
 
     asyncio.run(_amain())
 

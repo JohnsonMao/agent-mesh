@@ -1,10 +1,8 @@
 """Graph assembly and CLI entrypoint for the Assistant."""
 
-import sqlite3
-from collections.abc import Callable, Generator, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
-from pathlib import Path
+from typing import cast
 
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -12,16 +10,19 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import StateGraph
 from langgraph.graph.message import MessagesState
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.store.base import BaseStore
+from psycopg import Connection
+from psycopg.rows import DictRow
+from psycopg_pool import ConnectionPool
 
-from config import Settings, load_settings
+from config import load_settings
 from llm import build_llm
-from long_term_memory import build_store
+from long_term_memory import DEFAULT_POOL_KWARGS, build_store
 from skills import Skill, load_skills
 from stats import LoggingCallbackHandler, summarize_call_stats, summarize_tool_stats
 from tools import make_tools
@@ -213,37 +214,23 @@ def build_graph(
     return graph.compile(checkpointer=checkpointer, store=store)
 
 
-@contextmanager
-def open_store(settings: Settings) -> Generator[BaseStore]:
-    # LangGraph's SqliteStore starts its own transaction via BEGIN/COMMIT inside
-    # the store methods; the SQLite connection must therefore be in autocommit mode
-    # instead of the default implicit-transaction mode.
-    db_path = Path(settings.memory_store_path)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(
-        db_path,
-        check_same_thread=False,
-        isolation_level=None,
-    )
-    try:
-        yield build_store(conn, settings)
-    finally:
-        conn.close()
-
-
 def main() -> None:
     settings = load_settings()
-    checkpoint_path = Path(settings.checkpoint_db_path)
-    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     llm = build_llm(settings)
     skills = load_skills(settings.skills_dir)
     tools = make_tools(settings, skills)
     handler = LoggingCallbackHandler()
 
-    with (
-        SqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer,
-        open_store(settings) as store,
-    ):
+    with cast(
+        ConnectionPool[Connection[DictRow]],
+        ConnectionPool(
+            settings.database_url,
+            kwargs=DEFAULT_POOL_KWARGS,
+        ),
+    ) as pool:
+        checkpointer = PostgresSaver(pool)
+        checkpointer.setup()
+        store = build_store(pool, settings)
         app = build_graph(llm, tools, checkpointer, store, skills)
         config: RunnableConfig = {
             "configurable": {"thread_id": "assistant", "user_id": USER_ID},

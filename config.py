@@ -20,8 +20,7 @@ class Settings:
     model_presence_penalty: float
     memory_top_k: int
     memory_score_threshold: float
-    checkpoint_db_path: str
-    memory_store_path: str
+    database_url: str
     skills_dir: str
     slack_bot_token: str
     slack_app_token: str
@@ -43,8 +42,9 @@ def load_settings() -> Settings:
         model_presence_penalty=float(os.environ.get("MODEL_PRESENCE_PENALTY", "0.3")),
         memory_top_k=int(os.environ.get("MEMORY_TOP_K", "5")),
         memory_score_threshold=float(os.environ.get("MEMORY_SCORE_THRESHOLD", "0.4")),
-        checkpoint_db_path=os.environ.get("CHECKPOINT_DB_PATH", "data/checkpoints.sqlite"),
-        memory_store_path=os.environ.get("MEMORY_STORE_PATH", "data/memory_store.sqlite"),
+        database_url=os.environ.get(
+            "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/assistant"
+        ),
         skills_dir=os.environ.get("SKILLS_DIR", "skills"),
         slack_bot_token=os.environ.get("SLACK_BOT_TOKEN", ""),
         slack_app_token=os.environ.get("SLACK_APP_TOKEN", ""),

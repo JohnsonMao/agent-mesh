@@ -1,21 +1,28 @@
 """Persisted long-term Memory store: a namespaced, embedding-indexed key/value store."""
 
 import hashlib
-import sqlite3
+from typing import Any
 
 from langchain.embeddings import init_embeddings
 from langchain_core.embeddings import Embeddings
-from langgraph.store.sqlite import SqliteStore
-from langgraph.store.sqlite.base import SqliteIndexConfig
+from langgraph.store.postgres import AsyncPostgresStore, PostgresStore
+from langgraph.store.postgres.base import PostgresIndexConfig
+from psycopg.rows import dict_row
 
 from config import Settings
+
+DEFAULT_POOL_KWARGS: dict[str, Any] = {
+    "autocommit": True,
+    "prepare_threshold": 0,
+    "row_factory": dict_row,
+}
 
 
 class _TestEmbeddings(Embeddings):
     """Deterministic, in-memory embeddings used only for test fixtures.
 
     These models are intentionally named like "test-*" and should never trigger a
-    real network call when a repository test creates the sqlite-backed store.
+    real network call when a repository test creates the store.
     """
 
     dims = 64
@@ -38,9 +45,13 @@ def memory_namespace(user_id: str) -> tuple[str, str]:
     return (user_id, "memories")
 
 
-def memory_index_config(settings: Settings) -> SqliteIndexConfig:
+def memory_index_config(settings: Settings) -> PostgresIndexConfig:
     if settings.lm_studio_embedding_model.startswith("test-"):
-        return SqliteIndexConfig(dims=_TestEmbeddings.dims, embed=_TestEmbeddings(), fields=["content"])
+        return PostgresIndexConfig(
+            dims=_TestEmbeddings.dims,
+            embed=_TestEmbeddings(),
+            fields=["content"],
+        )
 
     embeddings = init_embeddings(
         model=settings.lm_studio_embedding_model,
@@ -51,10 +62,16 @@ def memory_index_config(settings: Settings) -> SqliteIndexConfig:
         # send raw strings instead.
         check_embedding_ctx_length=False,
     )
-    return SqliteIndexConfig(dims=1024, embed=embeddings, fields=["content"])
+    return PostgresIndexConfig(dims=1024, embed=embeddings, fields=["content"])
 
 
-def build_store(conn: sqlite3.Connection, settings: Settings) -> SqliteStore:
-    store = SqliteStore(conn, index=memory_index_config(settings))
+def build_store(conn: Any, settings: Settings) -> PostgresStore:  # noqa: ANN401
+    store = PostgresStore(conn, index=memory_index_config(settings))
     store.setup()
+    return store
+
+
+async def build_async_store(conn: Any, settings: Settings) -> AsyncPostgresStore:  # noqa: ANN401
+    store = AsyncPostgresStore(conn, index=memory_index_config(settings))
+    await store.setup()
     return store

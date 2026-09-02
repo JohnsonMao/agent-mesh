@@ -7,8 +7,7 @@ from conftest import RecordingChatModel, build_test_graph, build_test_settings
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 import tools as tools_module
-from long_term_memory import memory_namespace
-from main import SENT_AT_KEY, current_sent_at, open_store
+from main import SENT_AT_KEY, current_sent_at
 
 SENT_AT_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 
@@ -116,21 +115,6 @@ def test_assistant_gets_an_error_string_for_an_unknown_skill_name() -> None:
 
     tool_message = next(m for m in result["messages"] if isinstance(m, ToolMessage))
     assert "No skill named 'nonexistent' found" in tool_message.content
-
-
-def test_open_store_uses_autocommit_mode_for_sqlite_transactions(tmp_path) -> None:
-    settings = build_test_settings(
-        checkpoint_db_path=str(tmp_path / "checkpoints.sqlite"),
-        memory_store_path=str(tmp_path / "memory_store.sqlite"),
-    )
-    namespace = memory_namespace("tx-user")
-
-    with open_store(settings) as store:
-        store.put(namespace, "existing", {"content": "User likes tea"})
-        matches = store.search(namespace, query="tea", limit=5)
-
-    assert len(matches) == 1
-    assert matches[0].value["content"] == "User likes tea"
 
 
 def test_current_sent_at_returns_utc_iso8601_string_with_millisecond_precision() -> None:
