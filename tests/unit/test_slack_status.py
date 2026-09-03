@@ -37,11 +37,72 @@ def test_tool_done_label_uses_the_per_tool_copy() -> None:
     assert tool_done_label("execute_command") == "💻 執行指令"
 
 
+def test_tool_live_label_with_input_summary() -> None:
+    assert tool_live_label("web_search", {"query": "松山區天氣"}) == "🔍 正在搜尋網路：松山區天氣…"
+    assert (
+        tool_live_label("execute_command", {"command": "git status"})
+        == "💻 正在執行指令：git status…"
+    )
+    assert (
+        tool_live_label("recall_memory", {"query": "user tea preference"})
+        == "🧠 正在回想相關記憶：user tea preference…"
+    )
+    assert (
+        tool_live_label("save_memory", {"content": "我喜歡喝茶"})
+        == "📝 正在記下新的一件事：我喜歡喝茶…"
+    )
+    assert (
+        tool_live_label("load_skill", {"name": "playwright-cli"})
+        == "📘 正在載入技能：playwright-cli…"
+    )
+    assert (
+        tool_live_label(
+            "read_skill_resource",
+            {"name": "text-stats", "relative_path": "references/output-format.md"},
+        )
+        == "📖 正在讀取技能參考資料：text-stats/references/output-format.md…"
+    )
+    assert (
+        tool_live_label(
+            "run_skill_script",
+            {"name": "text-stats", "script_path": "scripts/count_stats.py"},
+        )
+        == "⚙️ 正在執行技能腳本：text-stats/scripts/count_stats.py…"
+    )
+
+
+def test_tool_done_label_with_input_summary() -> None:
+    assert tool_done_label("web_search", {"query": "松山區天氣"}) == "🔍 搜尋網路：松山區天氣"
+    assert (
+        tool_done_label("execute_command", {"command": "git status"}) == "💻 執行指令：git status"
+    )
+
+
+def test_tool_label_truncates_long_input_summary() -> None:
+    long_query = "a" * 80
+    assert tool_live_label("web_search", {"query": long_query}) == f"🔍 正在搜尋網路：{'a' * 50}…"
+    assert tool_done_label("web_search", {"query": long_query}) == f"🔍 搜尋網路：{'a' * 50}…"
+
+
 def test_build_output_summary_strips_the_save_memory_prefix() -> None:
     assert build_output_summary("save_memory", "Saved memory: 我下週要出差") == "我下週要出差"
     assert (
         build_output_summary("save_memory", "Updated existing memory: 我喜歡喝茶") == "我喜歡喝茶"
     )
+
+
+def test_build_output_summary_handles_subprocess_output() -> None:
+    assert build_output_summary("execute_command", "Exit code: 0\n") == "(執行成功，無輸出)"
+    assert (
+        build_output_summary("execute_command", "Exit code: 0\nAll tests passed")
+        == "All tests passed"
+    )
+    assert (
+        build_output_summary("execute_command", "Exit code: 1\ncommand not found")
+        == "❌ Exit code: 1\ncommand not found"
+    )
+    assert build_output_summary("execute_command", "Exit code: 127\n") == "❌ Exit code: 127"
+    assert build_output_summary("run_skill_script", "Exit code: 0\nDone") == "Done"
 
 
 def test_build_output_summary_keeps_recall_memory_content_as_is() -> None:
@@ -58,12 +119,16 @@ def test_build_output_summary_truncates_long_content() -> None:
     assert summary == "x" * 300 + "…"
 
 
-def test_build_web_search_output_joins_result_titles() -> None:
+def test_build_web_search_output_returns_none_when_sources_present() -> None:
     artifact = [
         {"title": "Weather", "url": "http://example.com"},
         {"title": "Forecast", "url": "http://x.com"},
     ]
-    assert build_web_search_output(artifact) == "Weather\nForecast"
+    assert build_web_search_output(artifact) is None
+
+
+def test_build_web_search_output_returns_message_when_empty() -> None:
+    assert build_web_search_output([]) == "找不到相關搜尋結果"
 
 
 def test_build_sources_maps_web_search_artifact_to_url_sources() -> None:

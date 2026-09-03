@@ -64,12 +64,22 @@ class FakeDownloadImage:
         return self.results[file["id"]]
 
 
-def _fake_astream_events(tool_calls: list[tuple[str, str, str, list[dict]]]):
-    """tool_calls: (run_id, tool_name, content, artifact), yielded start then end per call."""
+def _fake_astream_events(
+    tool_calls: list[tuple[str, str, str, list[dict]]]
+    | list[tuple[str, str, str, list[dict], dict]],
+):
+    """tool_calls: (run_id, tool_name, content, artifact) or (run_id, name, content, artifact, input)."""
 
     async def astream_events(input: dict, config: dict, **kwargs: object):
-        for run_id, name, content, artifact in tool_calls:
-            yield {"event": "on_tool_start", "name": name, "run_id": run_id}
+        for item in tool_calls:
+            run_id, name, content, artifact = item[0], item[1], item[2], item[3]
+            tool_input = item[4] if len(item) > 4 else {}
+            yield {
+                "event": "on_tool_start",
+                "name": name,
+                "run_id": run_id,
+                "data": {"input": tool_input},
+            }
             yield {
                 "event": "on_tool_end",
                 "name": name,
@@ -124,7 +134,7 @@ async def test_replies_to_a_top_level_dm_using_its_own_ts_as_thread_id() -> None
 async def test_a_tool_call_updates_its_task_from_in_progress_to_complete() -> None:
     graph = build_test_graph([AIMessage(content="unused")])
     graph.astream_events = _fake_astream_events(  # type: ignore[method-assign]
-        [("run-1", "save_memory", "Saved memory: I like tea", [])]
+        [("run-1", "save_memory", "Saved memory: I like tea", [], {"content": "I like tea"})]
     )
     graph.aget_state = _fake_aget_state("Got it, I'll remember that.")  # type: ignore[method-assign]
     settings = build_test_settings()
@@ -146,8 +156,8 @@ async def test_a_tool_call_updates_its_task_from_in_progress_to_complete() -> No
 
     (stream,) = open_thinking_stream.streams
     assert stream.updates == [
-        ("run-1", "📝 正在記下新的一件事…", "in_progress", None, None),
-        ("run-1", "📝 記住新事項", "complete", "I like tea", None),
+        ("run-1", "📝 正在記下新的一件事：I like tea…", "in_progress", None, None),
+        ("run-1", "📝 記住新事項：I like tea", "complete", "I like tea", None),
     ]
     assert stream.finished == "Got it, I'll remember that."
 
@@ -161,6 +171,7 @@ async def test_web_search_task_card_gets_titles_as_output_and_urls_as_sources() 
                 "web_search",
                 "Weather: Sunny all day (http://example.com)",
                 [{"title": "Weather", "url": "http://example.com"}],
+                {"query": "weather?"},
             )
         ]
     )
@@ -183,8 +194,17 @@ async def test_web_search_task_card_gets_titles_as_output_and_urls_as_sources() 
     )
 
     (stream,) = open_thinking_stream.streams
-    _, _, _, output, sources = stream.updates[1]
-    assert output == "Weather"
+    assert stream.updates[0] == (
+        "run-1",
+        "🔍 正在搜尋網路：weather?…",
+        "in_progress",
+        None,
+        None,
+    )
+    _, title, status, output, sources = stream.updates[1]
+    assert title == "🔍 搜尋網路：weather?"
+    assert status == "complete"
+    assert output is None
     assert sources == [UrlSourceElement(url="http://example.com", text="Weather")]
 
 

@@ -89,11 +89,17 @@ async def _run_turn(
     human_message = HumanMessage(
         content=content, additional_kwargs={SENT_AT_KEY: current_sent_at()}
     )
+    tool_inputs: dict[str, object] = {}
     async for event in graph.astream_events({"messages": [human_message]}, config, version="v2"):
         name = event.get("name")
+        run_id = event.get("run_id")
         if event["event"] == "on_tool_start":
-            await stream.update_task(event["run_id"], tool_live_label(name), "in_progress")
+            tool_input = event.get("data", {}).get("input")
+            if run_id:
+                tool_inputs[run_id] = tool_input
+            await stream.update_task(run_id, tool_live_label(name, tool_input), "in_progress")
         elif event["event"] == "on_tool_end":
+            tool_input = tool_inputs.pop(run_id, None) if run_id else None
             output_message = event["data"]["output"]
             content_str = str(getattr(output_message, "content", output_message))
             artifact = getattr(output_message, "artifact", None) or []
@@ -104,15 +110,15 @@ async def _run_turn(
                 output = build_output_summary(name, content_str)
                 sources = None
             await stream.update_task(
-                event["run_id"], tool_done_label(name), "complete", output, sources
+                run_id, tool_done_label(name, tool_input), "complete", output, sources
             )
         elif event["event"] == "on_chain_start" and name == IMAGE_ANALYSIS_NODE:
             # Assumes on_chain_start/on_chain_end share a run_id per node execution, the
             # way on_tool_start/on_tool_end already do -- unverified beyond scripted
             # tests; confirm with a real-model probe if this Task Card looks wrong.
-            await stream.update_task(event["run_id"], tool_live_label(name), "in_progress")
+            await stream.update_task(run_id, tool_live_label(name), "in_progress")
         elif event["event"] == "on_chain_end" and name == IMAGE_ANALYSIS_NODE:
-            await stream.update_task(event["run_id"], tool_done_label(name), "complete")
+            await stream.update_task(run_id, tool_done_label(name), "complete")
     state = await graph.aget_state(config)
     reply = state.values["messages"][-1].content
     # Slack rejects an empty text (no_text error); some models can finish with empty content.
