@@ -12,7 +12,6 @@ _LIVE_ACTIONS = {
     "save_memory": ("📝", "正在記下新的一件事"),
     "load_skill": ("📘", "正在載入技能"),
     "read_skill_resource": ("📖", "正在讀取技能參考資料"),
-    "run_skill_script": ("⚙️", "正在執行技能腳本"),
     "analyze_images": ("🖼️", "正在讀取圖片"),
     "execute_command": ("💻", "正在執行指令"),
 }
@@ -23,23 +22,16 @@ _DONE_ACTIONS = {
     "save_memory": ("📝", "記住新事項"),
     "load_skill": ("📘", "載入技能"),
     "read_skill_resource": ("📖", "讀取技能參考資料"),
-    "run_skill_script": ("⚙️", "執行技能腳本"),
     "analyze_images": ("🖼️", "分析圖片"),
     "execute_command": ("💻", "執行指令"),
 }
 
 _SAVE_MEMORY_PREFIXES = ("Saved memory: ", "Updated existing memory: ")
 
-INPUT_MAX_LENGTH = 50
-OUTPUT_MAX_LENGTH = 300
 
-
-def _truncate_input(text: str) -> str:
+def _format_input_text(text: str) -> str:
     # Collapse multiple whitespaces and newlines into a single space
-    cleaned = " ".join(text.split())
-    if len(cleaned) <= INPUT_MAX_LENGTH:
-        return cleaned
-    return cleaned[:INPUT_MAX_LENGTH] + "…"
+    return " ".join(text.split())
 
 
 def extract_input_summary(tool_name: str, tool_input: object) -> str | None:
@@ -61,19 +53,12 @@ def extract_input_summary(tool_name: str, tool_input: object) -> str | None:
             summary = f"{name}/{path}"
         else:
             summary = name or path
-    elif tool_name == "run_skill_script":
-        name = tool_input.get("name")
-        path = tool_input.get("script_path")
-        if name and path:
-            summary = f"{name}/{path}"
-        else:
-            summary = name or path
     elif tool_name == "execute_command":
         summary = tool_input.get("command")
 
     if summary is None or not str(summary).strip():
         return None
-    return _truncate_input(str(summary).strip())
+    return _format_input_text(str(summary).strip())
 
 
 def tool_live_label(tool_name: str, tool_input: object = None) -> str:
@@ -100,12 +85,6 @@ def tool_done_label(tool_name: str, tool_input: object = None) -> str:
     return f"{icon} {action}"
 
 
-def _truncate(text: str) -> str:
-    if len(text) <= OUTPUT_MAX_LENGTH:
-        return text
-    return text[:OUTPUT_MAX_LENGTH] + "…"
-
-
 def build_output_summary(tool_name: str, content: str) -> str:
     """Build the Task Card `output` text for finished tool calls.
 
@@ -117,20 +96,28 @@ def build_output_summary(tool_name: str, content: str) -> str:
             if content.startswith(prefix):
                 content = content[len(prefix) :]
                 break
-        return _truncate(content)
+        return content
 
-    if tool_name in ("execute_command", "run_skill_script"):
+    if tool_name == "load_skill":
+        if content.startswith("No skill named"):
+            return content
+        return "已載入技能指示"
+
+    if tool_name == "read_skill_resource":
+        if content.startswith("No skill named") or content.startswith("No file") or "outside skill" in content:
+            return content
+        return "已讀取技能參考資料"
+
+    if tool_name == "execute_command":
         match = re.match(r"^Exit code:\s*(\d+)\n?(.*)$", content, re.DOTALL)
         if match:
             code = int(match.group(1))
             output = match.group(2).strip()
             if code == 0:
-                return _truncate(output) if output else "(執行成功，無輸出)"
-            return _truncate(
-                f"❌ Exit code: {code}\n{output}" if output else f"❌ Exit code: {code}"
-            )
+                return f"```{output}```" if output else "(執行成功，無輸出)"
+            return f"❌ Exit code: {code}\n```{output}```" if output else f"❌ Exit code: {code}"
 
-    return _truncate(content)
+    return content
 
 
 def build_web_search_output(artifact: list[dict[str, str]]) -> str | None:

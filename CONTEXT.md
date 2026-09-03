@@ -21,7 +21,7 @@ Assistant 判斷值得保留時，主動呼叫工具顯式存下的長期事實�
 _Avoid_: History（History 屬於 Conversation 的一部分，不是 Memory）
 
 **Tool（工具）**:
-Assistant 可主動呼叫、用來完成單純對話無法達成之任務的外部能力（例如查詢即時資訊）。呼叫與否由 Assistant 自行判斷，不是每輪都固定執行。呼叫會產生真實副作用或對外查詢結果，這點與 Skill 不同。也包含 Skill 正文指示 Assistant 呼叫的輔助腳本執行（例如 `run_skill_script`）——即使腳本本身放在某個 Skill 的目錄底下，實際會產生副作用的仍是這個 Tool，不是 Skill 自己。
+Assistant 可主動呼叫、用來完成單純對話無法達成之任務的外部能力（例如查詢即時資訊、執行系統指令 `execute_command`）。呼叫與否由 Assistant 自行判斷，不是每輪都固定執行。呼叫會產生真實副作用或對外查詢結果，這點與 Skill 不同。
 _Avoid_: Function, Action, Skill（Skill 不執行外部動作，只提供指示）
 
 **Skill（技能）**:

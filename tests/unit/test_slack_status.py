@@ -17,7 +17,6 @@ def test_tool_live_label_uses_the_per_tool_copy() -> None:
     assert tool_live_label("save_memory") == "📝 正在記下新的一件事…"
     assert tool_live_label("load_skill") == "📘 正在載入技能…"
     assert tool_live_label("read_skill_resource") == "📖 正在讀取技能參考資料…"
-    assert tool_live_label("run_skill_script") == "⚙️ 正在執行技能腳本…"
     assert tool_live_label("analyze_images") == "🖼️ 正在讀取圖片…"
     assert tool_live_label("execute_command") == "💻 正在執行指令…"
 
@@ -32,7 +31,6 @@ def test_tool_done_label_uses_the_per_tool_copy() -> None:
     assert tool_done_label("save_memory") == "📝 記住新事項"
     assert tool_done_label("load_skill") == "📘 載入技能"
     assert tool_done_label("read_skill_resource") == "📖 讀取技能參考資料"
-    assert tool_done_label("run_skill_script") == "⚙️ 執行技能腳本"
     assert tool_done_label("analyze_images") == "🖼️ 分析圖片"
     assert tool_done_label("execute_command") == "💻 執行指令"
 
@@ -62,13 +60,6 @@ def test_tool_live_label_with_input_summary() -> None:
         )
         == "📖 正在讀取技能參考資料：text-stats/references/output-format.md…"
     )
-    assert (
-        tool_live_label(
-            "run_skill_script",
-            {"name": "text-stats", "script_path": "scripts/count_stats.py"},
-        )
-        == "⚙️ 正在執行技能腳本：text-stats/scripts/count_stats.py…"
-    )
 
 
 def test_tool_done_label_with_input_summary() -> None:
@@ -78,10 +69,16 @@ def test_tool_done_label_with_input_summary() -> None:
     )
 
 
-def test_tool_label_truncates_long_input_summary() -> None:
+def test_tool_label_formats_whitespace_without_truncating() -> None:
     long_query = "a" * 80
-    assert tool_live_label("web_search", {"query": long_query}) == f"🔍 正在搜尋網路：{'a' * 50}…"
-    assert tool_done_label("web_search", {"query": long_query}) == f"🔍 搜尋網路：{'a' * 50}…"
+    assert (
+        tool_live_label("web_search", {"query": f"  {long_query}  "})
+        == f"🔍 正在搜尋網路：{long_query}…"
+    )
+    assert (
+        tool_done_label("web_search", {"query": f"  {long_query}  "})
+        == f"🔍 搜尋網路：{long_query}"
+    )
 
 
 def test_build_output_summary_strips_the_save_memory_prefix() -> None:
@@ -91,18 +88,30 @@ def test_build_output_summary_strips_the_save_memory_prefix() -> None:
     )
 
 
+def test_build_output_summary_handles_skill_outputs() -> None:
+    assert build_output_summary("load_skill", "# Playwright Instructions") == "已載入技能指示"
+    assert (
+        build_output_summary("load_skill", "No skill named 'foo' found.")
+        == "No skill named 'foo' found."
+    )
+    assert build_output_summary("read_skill_resource", "# Output Format") == "已讀取技能參考資料"
+    assert (
+        build_output_summary("read_skill_resource", "No file 'bar' found in skill 'foo'.")
+        == "No file 'bar' found in skill 'foo'."
+    )
+
+
 def test_build_output_summary_handles_subprocess_output() -> None:
     assert build_output_summary("execute_command", "Exit code: 0\n") == "(執行成功，無輸出)"
     assert (
         build_output_summary("execute_command", "Exit code: 0\nAll tests passed")
-        == "All tests passed"
+        == "```All tests passed```"
     )
     assert (
         build_output_summary("execute_command", "Exit code: 1\ncommand not found")
-        == "❌ Exit code: 1\ncommand not found"
+        == "❌ Exit code: 1\n```command not found```"
     )
     assert build_output_summary("execute_command", "Exit code: 127\n") == "❌ Exit code: 127"
-    assert build_output_summary("run_skill_script", "Exit code: 0\nDone") == "Done"
 
 
 def test_build_output_summary_keeps_recall_memory_content_as_is() -> None:
@@ -113,10 +122,10 @@ def test_build_output_summary_keeps_recall_memory_content_as_is() -> None:
     )
 
 
-def test_build_output_summary_truncates_long_content() -> None:
+def test_build_output_summary_does_not_truncate_long_content() -> None:
     long_content = "x" * 400
     summary = build_output_summary("recall_memory", long_content)
-    assert summary == "x" * 300 + "…"
+    assert summary == long_content
 
 
 def test_build_web_search_output_returns_none_when_sources_present() -> None:

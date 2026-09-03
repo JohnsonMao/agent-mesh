@@ -14,8 +14,6 @@ from llm import build_llm
 from long_term_memory import memory_namespace
 from skills import Skill
 
-SKILL_SCRIPT_TIMEOUT_SECONDS = 30
-SKILL_SCRIPT_OUTPUT_LIMIT = 4000
 COMMAND_TIMEOUT_SECONDS = 60
 COMMAND_OUTPUT_LIMIT = 4000
 
@@ -49,12 +47,6 @@ class ReadSkillResourceInput(BaseModel):
     relative_path: str = Field(
         description="Path to the resource file, relative to the skill's directory."
     )
-
-
-class RunSkillScriptInput(BaseModel):
-    name: str = Field(description="The name of the skill the script belongs to.")
-    script_path: str = Field(description="Path to the script under the skill's scripts/ directory.")
-    args: list[str] = Field(default_factory=list, description="Command-line arguments.")
 
 
 class ExecuteCommandInput(BaseModel):
@@ -189,32 +181,6 @@ def _run_subprocess(
     return f"Exit code: {result.returncode}\n{output}"
 
 
-def make_run_skill_script(skills: list[Skill]) -> BaseTool:
-    skills_by_name = {skill.name: skill for skill in skills}
-
-    @tool("run_skill_script", args_schema=RunSkillScriptInput)
-    def run_skill_script(name: str, script_path: str, args: list[str]) -> str:
-        """Run a Python script (e.g. under scripts/) from a Skill's directory."""
-        skill = skills_by_name.get(name)
-        if skill is None:
-            return f"No skill named '{name}' found."
-        try:
-            path = _resolve_skill_path(skill, script_path)
-        except ValueError as error:
-            return str(error)
-        if not path.is_file():
-            return f"No script '{script_path}' found in skill '{name}'."
-        return _run_subprocess(
-            ["uv", "run", "python", str(path), *args],
-            shell=False,
-            timeout_seconds=SKILL_SCRIPT_TIMEOUT_SECONDS,
-            output_limit=SKILL_SCRIPT_OUTPUT_LIMIT,
-            timeout_message=f"Script '{script_path}' timed out after {SKILL_SCRIPT_TIMEOUT_SECONDS}s.",
-        )
-
-    return run_skill_script
-
-
 @tool("execute_command", args_schema=ExecuteCommandInput)
 def execute_command(command: str) -> str:
     """Execute a shell command in the execution environment."""
@@ -228,7 +194,7 @@ def execute_command(command: str) -> str:
 
 
 def make_tools(settings: Settings, skills: list[Skill]) -> list[BaseTool]:
-    tools = [
+    return [
         make_save_memory(settings),
         make_recall_memory(settings),
         web_search,
@@ -236,6 +202,3 @@ def make_tools(settings: Settings, skills: list[Skill]) -> list[BaseTool]:
         make_load_skill(skills),
         make_read_skill_resource(skills),
     ]
-    if not settings.disable_skill_scripts:
-        tools.append(make_run_skill_script(skills))
-    return tools

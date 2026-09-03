@@ -55,8 +55,8 @@ SYSTEM_PROMPT = (
 SKILLS_PROMPT_SECTION_TEMPLATE = (
     "\n\nAvailable skills (call load_skill with the skill's name to get its full "
     "instructions when one matches the current request; load_skill also lists any "
-    "references/ or scripts/ files in that skill's directory, which you can then read "
-    "with read_skill_resource or run with run_skill_script if relevant):\n{skill_lines}"
+    "references/ or other files in that skill's directory, which you can then read "
+    "with read_skill_resource if relevant):\n{skill_lines}"
 )
 
 IMAGE_ANALYSIS_PROMPT = (
