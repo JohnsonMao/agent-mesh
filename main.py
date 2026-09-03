@@ -39,9 +39,10 @@ SYSTEM_PROMPT = (
     "You are a personal AI assistant. You may call the recall_memory tool if "
     "relevant saved facts would help you answer, and the save_memory tool when "
     "you judge a fact is worth remembering long-term. You may call the "
-    "web_search tool when you need current or unknown information. Only call a "
-    "tool when it genuinely helps the current turn; never take action the user "
-    "didn't ask for.\n\n"
+    "web_search tool when you need current or unknown information. You may call the "
+    "execute_command tool to run shell commands in the execution environment when "
+    "requested or instructed by a skill. Only call a tool when it genuinely helps the "
+    "current turn; never take action the user didn't ask for.\n\n"
     "User messages may include a timestamp formatted as "
     '"<current_datetime>YYYY-MM-DDTHH:MM:SS.sssZ (Weekday)</current_datetime>" (ISO 8601 UTC). '
     "Treat the timestamp on the most recent user message as the current date and time, "

@@ -79,6 +79,27 @@ def test_assistant_searches_the_web_via_explicit_tool_call(monkeypatch) -> None:
     assert tool_message.artifact == [{"title": "Weather", "url": "http://example.com"}]
 
 
+def test_assistant_executes_command_via_explicit_tool_call() -> None:
+    tool_call = {
+        "name": "execute_command",
+        "args": {"command": "echo 'running command'"},
+        "id": "call-1",
+    }
+    responses = [
+        AIMessage(content="", tool_calls=[tool_call]),
+        AIMessage(content="Command finished successfully."),
+    ]
+    graph = build_test_graph(responses)
+    config = {"configurable": {"thread_id": "t1", "user_id": "u1"}}
+
+    result = graph.invoke({"messages": [HumanMessage(content="run echo")]}, config)
+
+    assert result["messages"][-1].content == "Command finished successfully."
+    tool_message = next(m for m in result["messages"] if isinstance(m, ToolMessage))
+    assert "Exit code: 0" in tool_message.content
+    assert "running command" in tool_message.content
+
+
 def test_assistant_loads_a_skill_via_explicit_tool_call(tmp_path) -> None:
     skill_dir = tmp_path / "greeting"
     skill_dir.mkdir()

@@ -12,6 +12,7 @@ _LIVE_LABELS = {
     "read_skill_resource": "📖 正在讀取技能參考資料…",
     "run_skill_script": "⚙️ 正在執行技能腳本…",
     "analyze_images": "🖼️ 正在讀取圖片…",
+    "execute_command": "💻 正在執行指令…",
 }
 
 _DONE_LABELS = {
@@ -22,7 +23,9 @@ _DONE_LABELS = {
     "read_skill_resource": "📖 讀取技能參考資料",
     "run_skill_script": "⚙️ 執行技能腳本",
     "analyze_images": "🖼️ 分析圖片",
+    "execute_command": "💻 執行指令",
 }
+
 
 _SAVE_MEMORY_PREFIXES = ("Saved memory: ", "Updated existing memory: ")
 

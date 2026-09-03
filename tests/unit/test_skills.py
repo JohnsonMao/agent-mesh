@@ -77,3 +77,13 @@ def test_load_skills_lists_reference_and_script_files_as_resources(tmp_path) -> 
         "references/output-format.md",
         "scripts/count_stats.py",
     )
+
+
+def test_load_skills_loads_builtin_playwright_cli_skill() -> None:
+    skills = load_skills("skills")
+    skill_names = [skill.name for skill in skills]
+
+    assert "playwright-cli" in skill_names
+    playwright_skill = next(s for s in skills if s.name == "playwright-cli")
+    assert "playwright-cli" in playwright_skill.description
+    assert "snapshot" in playwright_skill.body

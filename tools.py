@@ -16,6 +16,8 @@ from skills import Skill
 
 SKILL_SCRIPT_TIMEOUT_SECONDS = 30
 SKILL_SCRIPT_OUTPUT_LIMIT = 4000
+COMMAND_TIMEOUT_SECONDS = 60
+COMMAND_OUTPUT_LIMIT = 4000
 
 MEMORY_MERGE_PROMPT = (
     "You maintain a personal assistant's long-term memory. Merge the new fact "
@@ -53,6 +55,10 @@ class RunSkillScriptInput(BaseModel):
     name: str = Field(description="The name of the skill the script belongs to.")
     script_path: str = Field(description="Path to the script under the skill's scripts/ directory.")
     args: list[str] = Field(default_factory=list, description="Command-line arguments.")
+
+
+class ExecuteCommandInput(BaseModel):
+    command: str = Field(description="The shell command to execute in the environment.")
 
 
 def merge_memory_content(settings: Settings, existing: str, new: str) -> str:
@@ -159,6 +165,30 @@ def make_read_skill_resource(skills: list[Skill]) -> BaseTool:
     return read_skill_resource
 
 
+def _run_subprocess(
+    command_args: list[str] | str,
+    *,
+    shell: bool,
+    timeout_seconds: int,
+    output_limit: int,
+    timeout_message: str,
+) -> str:
+    try:
+        result = subprocess.run(
+            command_args,
+            shell=shell,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        return timeout_message
+    output = result.stdout + result.stderr
+    if len(output) > output_limit:
+        output = output[:output_limit] + "\n[output truncated]"
+    return f"Exit code: {result.returncode}\n{output}"
+
+
 def make_run_skill_script(skills: list[Skill]) -> BaseTool:
     skills_by_name = {skill.name: skill for skill in skills}
 
@@ -174,21 +204,27 @@ def make_run_skill_script(skills: list[Skill]) -> BaseTool:
             return str(error)
         if not path.is_file():
             return f"No script '{script_path}' found in skill '{name}'."
-        try:
-            result = subprocess.run(
-                ["uv", "run", "python", str(path), *args],
-                capture_output=True,
-                text=True,
-                timeout=SKILL_SCRIPT_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired:
-            return f"Script '{script_path}' timed out after {SKILL_SCRIPT_TIMEOUT_SECONDS}s."
-        output = result.stdout + result.stderr
-        if len(output) > SKILL_SCRIPT_OUTPUT_LIMIT:
-            output = output[:SKILL_SCRIPT_OUTPUT_LIMIT] + "\n[output truncated]"
-        return f"Exit code: {result.returncode}\n{output}"
+        return _run_subprocess(
+            ["uv", "run", "python", str(path), *args],
+            shell=False,
+            timeout_seconds=SKILL_SCRIPT_TIMEOUT_SECONDS,
+            output_limit=SKILL_SCRIPT_OUTPUT_LIMIT,
+            timeout_message=f"Script '{script_path}' timed out after {SKILL_SCRIPT_TIMEOUT_SECONDS}s.",
+        )
 
     return run_skill_script
+
+
+@tool("execute_command", args_schema=ExecuteCommandInput)
+def execute_command(command: str) -> str:
+    """Execute a shell command in the execution environment."""
+    return _run_subprocess(
+        command,
+        shell=True,
+        timeout_seconds=COMMAND_TIMEOUT_SECONDS,
+        output_limit=COMMAND_OUTPUT_LIMIT,
+        timeout_message=f"Command '{command}' timed out after {COMMAND_TIMEOUT_SECONDS}s.",
+    )
 
 
 def make_tools(settings: Settings, skills: list[Skill]) -> list[BaseTool]:
@@ -196,6 +232,7 @@ def make_tools(settings: Settings, skills: list[Skill]) -> list[BaseTool]:
         make_save_memory(settings),
         make_recall_memory(settings),
         web_search,
+        execute_command,
         make_load_skill(skills),
         make_read_skill_resource(skills),
     ]

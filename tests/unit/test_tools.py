@@ -107,6 +107,15 @@ def test_make_tools_registers_run_skill_script_by_default(tmp_path) -> None:
     assert "run_skill_script" in [tool.name for tool in registered]
 
 
+def test_make_tools_registers_execute_command(tmp_path) -> None:
+    settings = build_test_settings()
+    skill = _make_skill(tmp_path)
+
+    registered = tools.make_tools(settings, [skill])
+
+    assert "execute_command" in [tool.name for tool in registered]
+
+
 def test_make_tools_omits_run_skill_script_when_disabled(tmp_path) -> None:
     settings = build_test_settings(disable_skill_scripts=True)
     skill = _make_skill(tmp_path)
@@ -115,3 +124,35 @@ def test_make_tools_omits_run_skill_script_when_disabled(tmp_path) -> None:
 
     assert "run_skill_script" not in [tool.name for tool in registered]
     assert "read_skill_resource" in [tool.name for tool in registered]
+    assert "execute_command" in [tool.name for tool in registered]
+
+
+def test_execute_command_returns_exit_code_and_output() -> None:
+    result = tools.execute_command.invoke({"command": "echo 'hello world'"})
+
+    assert "Exit code: 0" in result
+    assert "hello world" in result
+
+
+def test_execute_command_captures_nonzero_exit_code_and_stderr() -> None:
+    result = tools.execute_command.invoke(
+        {"command": "python -c \"import sys; sys.stderr.write('err msg'); sys.exit(2)\""}
+    )
+
+    assert "Exit code: 2" in result
+    assert "err msg" in result
+
+
+def test_execute_command_handles_timeout(monkeypatch) -> None:
+    monkeypatch.setattr(tools, "COMMAND_TIMEOUT_SECONDS", 0.1)
+
+    result = tools.execute_command.invoke({"command": 'python -c "import time; time.sleep(1)"'})
+
+    assert "timed out after" in result
+
+
+def test_execute_command_truncates_long_output() -> None:
+    result = tools.execute_command.invoke({"command": "python -c \"print('a' * 5000)\""})
+
+    assert "Exit code: 0" in result
+    assert "[output truncated]" in result
