@@ -15,8 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install uv for Python dependency management
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# Install playwright-cli globally (requires Node >= 20, provided in Playwright base image)
-RUN npm install -g @playwright/cli@latest
+# Install Google Chrome and its Linux dependencies during image build.
+# playwright-cli uses Chrome by default.
+RUN npm install -g @playwright/cli@latest \
+    && playwright-cli install-browser chrome --with-deps
 
 WORKDIR /app
 

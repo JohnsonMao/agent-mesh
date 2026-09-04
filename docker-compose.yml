@@ -1,5 +1,13 @@
 services:
   app:
+    # Google Chrome for Linux is x86_64-only. Docker Desktop emulates this on
+    # ARM64 hosts so the browser is available at /opt/google/chrome/chrome.
+    platform: linux/amd64
+    # Run the application and Chrome without root. The seccomp profile is the
+    # Playwright-recommended policy that permits Chrome's user namespace.
+    user: pwuser
+    security_opt:
+      - seccomp:./seccomp_profile.json
     build:
       context: .
       dockerfile: Dockerfile
@@ -9,6 +17,11 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/assistant
+      # `localhost` inside this container is the container itself. LM Studio
+      # runs on the host, so use Docker's host gateway name instead.
+      LM_STUDIO_BASE_URL: http://host.docker.internal:1234/v1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
