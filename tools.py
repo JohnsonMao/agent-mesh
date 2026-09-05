@@ -1,5 +1,6 @@
 """Tools the Assistant may call: explicit long-term Memory, web search, and Skills."""
 
+import logging
 import subprocess
 from pathlib import Path
 from uuid import uuid4
@@ -14,8 +15,14 @@ from llm import build_llm
 from long_term_memory import memory_namespace
 from skills import Skill
 
+logger = logging.getLogger(__name__)
+
 COMMAND_TIMEOUT_SECONDS = 60
 COMMAND_OUTPUT_LIMIT = 4000
+WEB_SEARCH_UNAVAILABLE = (
+    "Web search is temporarily unavailable. Do not invent current information; "
+    "tell the user that the search could not be completed."
+)
 
 MEMORY_MERGE_PROMPT = (
     "You maintain a personal assistant's long-term memory. Merge the new fact "
@@ -103,7 +110,13 @@ def make_recall_memory(settings: Settings) -> BaseTool:
 @tool("web_search", args_schema=WebSearchInput, response_format="content_and_artifact")
 def web_search(query: str) -> tuple[str, list[dict[str, str]]]:
     """Search the web for current or unknown information."""
-    results = DDGS().text(query, max_results=5)
+    try:
+        results = DDGS().text(query, max_results=5)
+    except Exception:
+        # A provider/import failure must remain a tool result so the graph can let the
+        # model explain that current information could not be retrieved.
+        logger.exception("Web search failed")
+        return WEB_SEARCH_UNAVAILABLE, []
     if not results:
         return "No results found.", []
     content = "\n\n".join(f"{r['title']}: {r['body']} ({r['href']})" for r in results)

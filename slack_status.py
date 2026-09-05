@@ -104,7 +104,11 @@ def build_output_summary(tool_name: str, content: str) -> str:
         return "已載入技能指示"
 
     if tool_name == "read_skill_resource":
-        if content.startswith("No skill named") or content.startswith("No file") or "outside skill" in content:
+        if (
+            content.startswith("No skill named")
+            or content.startswith("No file")
+            or "outside skill" in content
+        ):
             return content
         return "已讀取技能參考資料"
 

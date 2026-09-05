@@ -125,6 +125,17 @@ async def _run_turn(
     await stream.finish(reply or EMPTY_REPLY)
 
 
+async def _finish_stream(stream: ThinkingStream, markdown_text: str, *, reason: str) -> None:
+    """Best-effort Slack stream cleanup that never changes a Turn's outcome."""
+    try:
+        await stream.finish(markdown_text)
+    except Exception:
+        # Slack may return a transient 5xx even if it has already stopped the stream.
+        # In particular, a failed cleanup of a cancelled Turn must not prevent its
+        # replacement Turn from being created.
+        logger.exception("Failed to finish Slack stream while %s", reason)
+
+
 async def handle_slack_message(
     event: dict,
     *,
@@ -161,13 +172,13 @@ async def handle_slack_message(
         try:
             await _run_turn(graph, config, content, stream)
         except asyncio.CancelledError:
-            await stream.finish(STATUS_RESUMED)
+            await _finish_stream(stream, STATUS_RESUMED, reason="cancelling a superseded turn")
             raise
         except Exception:
             logger.exception(
                 "handle_slack_message failed for channel=%s thread_id=%s", channel, thread_id
             )
-            await stream.finish(ERROR_REPLY)
+            await _finish_stream(stream, ERROR_REPLY, reason="reporting a turn failure")
 
     turn = asyncio.ensure_future(_turn())
     in_flight[thread_id] = turn

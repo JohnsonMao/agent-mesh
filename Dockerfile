@@ -28,8 +28,13 @@ COPY pyproject.toml uv.lock ./
 # Install project dependencies into virtualenv
 RUN uv sync --frozen --no-dev
 
+# The Compose development setup mounts this directory as a named volume while
+# running the app as pwuser.  Its initial contents must remain writable by that
+# user if uv ever needs to update the environment.
+RUN chown -R pwuser:pwuser /app/.venv
+
 # Copy application source code
 COPY . .
 
 # Default command starts the Slack app
-CMD ["uv", "run", "python", "slack_app.py"]
+CMD ["uv", "run", "--no-sync", "python", "slack_app.py"]

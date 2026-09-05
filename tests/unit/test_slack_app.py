@@ -42,6 +42,22 @@ class FakeOpenThinkingStream:
         return stream
 
 
+class FailingFirstFinishStream(FakeOpenThinkingStream):
+    """Makes cancellation cleanup fail once, like a transient chat.stopStream failure."""
+
+    async def __call__(self, channel: str, thread_id: str) -> FakeThinkingStream:
+        stream = await super().__call__(channel, thread_id)
+        if len(self.streams) == 1:
+            original_finish = stream.finish
+
+            async def failing_finish(markdown_text: str) -> None:
+                await original_finish(markdown_text)
+                raise RuntimeError("simulated chat.stopStream 500")
+
+            stream.finish = failing_finish  # type: ignore[method-assign]
+        return stream
+
+
 class FakeSetStatus:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, str]] = []
@@ -401,6 +417,65 @@ async def test_a_followup_message_cancels_the_in_flight_turn_and_starts_a_fresh_
         ("D1", "111.1", "思考中…"),
         ("D1", "111.1", "已收到你的補充，重新整理回覆中…"),
     ]
+    assert in_flight == {}
+
+
+async def test_a_followup_starts_even_when_cancelling_the_old_stream_cannot_finish() -> None:
+    graph = build_test_graph([AIMessage(content="unused")])
+    settings = build_test_settings()
+    open_thinking_stream = FailingFirstFinishStream()
+    set_status = FakeSetStatus()
+    download_image = FakeDownloadImage()
+    in_flight: InFlightTurns = {}
+    started = asyncio.Event()
+    call_count = 0
+
+    async def fake_astream_events(input: dict, config: dict, **kwargs: object):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            started.set()
+            await asyncio.sleep(3600)
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+    graph.astream_events = fake_astream_events  # type: ignore[method-assign]
+    graph.aget_state = _fake_aget_state("the combined reply")  # type: ignore[method-assign]
+    first_event = {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "first"}
+    followup_event = {
+        "user": "U_ALLOWED",
+        "channel": "D1",
+        "ts": "111.2",
+        "thread_ts": "111.1",
+        "text": "also this",
+    }
+
+    first_turn = asyncio.create_task(
+        handle_slack_message(
+            first_event,
+            graph=graph,
+            settings=settings,
+            set_status=set_status,
+            open_thinking_stream=open_thinking_stream,
+            download_image=download_image,
+            in_flight=in_flight,
+        )
+    )
+    await started.wait()
+
+    await handle_slack_message(
+        followup_event,
+        graph=graph,
+        settings=settings,
+        set_status=set_status,
+        open_thinking_stream=open_thinking_stream,
+        download_image=download_image,
+        in_flight=in_flight,
+    )
+    await first_turn
+
+    assert len(open_thinking_stream.streams) == 2
+    assert open_thinking_stream.streams[-1].finished == "the combined reply"
     assert in_flight == {}
 
 

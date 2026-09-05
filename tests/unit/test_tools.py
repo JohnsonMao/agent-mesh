@@ -81,6 +81,19 @@ def test_make_tools_registers_execute_command(tmp_path) -> None:
     assert "load_skill" in [tool.name for tool in registered]
 
 
+def test_web_search_returns_a_tool_result_when_the_search_backend_fails(monkeypatch) -> None:
+    class FailingSearch:
+        def text(self, query: str, max_results: int) -> list[dict[str, str]]:
+            raise ImportError("cannot import name 'etree' from 'lxml'")
+
+    monkeypatch.setattr(tools, "DDGS", FailingSearch)
+
+    content, artifact = tools.web_search.func(query="current weather")
+
+    assert "temporarily unavailable" in content
+    assert artifact == []
+
+
 def test_execute_command_returns_exit_code_and_output() -> None:
     result = tools.execute_command.invoke({"command": "echo 'hello world'"})
 
