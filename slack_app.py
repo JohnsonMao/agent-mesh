@@ -7,6 +7,7 @@ from contextlib import suppress
 from typing import cast
 
 import aiohttp
+from aiohttp import web
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -18,6 +19,13 @@ from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp
 
 from config import Settings, load_settings
+from execution_traces import (
+    ExecutionTrace,
+    NullTraceRepository,
+    PostgresTraceRepository,
+    TraceRecorder,
+    create_viewer_app,
+)
 from llm import build_llm
 from long_term_memory import DEFAULT_POOL_KWARGS, build_async_store
 from main import SENT_AT_KEY, USER_ID, build_graph, current_sent_at
@@ -82,7 +90,9 @@ async def _run_turn(
     config: RunnableConfig,
     content: MessageContent,
     stream: ThinkingStream,
-) -> None:
+    trace_recorder: TraceRecorder | None = None,
+    trace: ExecutionTrace | None = None,
+) -> str:
     # Stream (rather than a single ainvoke) so each Thinking Step (see CONTEXT.md) -- a
     # tool call or the mandatory image-analysis step starting or finishing -- can be
     # reflected as a Task Card update live.
@@ -92,13 +102,45 @@ async def _run_turn(
     tool_inputs: dict[str, object] = {}
     async for event in graph.astream_events({"messages": [human_message]}, config, version="v2"):
         name = event.get("name")
-        run_id = event.get("run_id")
-        if event["event"] == "on_tool_start":
+        run_id = str(event.get("run_id") or "")
+        parent_ids = event.get("parent_ids") or []
+        parent_step_id = str(parent_ids[-1]) if parent_ids else None
+        event_type = event["event"]
+        if trace_recorder is not None and trace is not None and run_id:
+            # The public graph event stream is the capture boundary; it deliberately
+            # avoids changing graph callbacks or Slack Thinking Step behavior.
+            if event_type in {"on_chat_model_start", "on_tool_start"} or (
+                event_type == "on_chain_start" and name == IMAGE_ANALYSIS_NODE
+            ):
+                category = (
+                    "model"
+                    if event_type == "on_chat_model_start"
+                    else "tool"
+                    if event_type == "on_tool_start"
+                    else "image_analysis"
+                )
+                await trace_recorder.start_step(
+                    trace,
+                    run_id,
+                    parent_step_id,
+                    category,
+                    event.get("data", {}).get("input"),
+                    {"name": str(name)},
+                )
+            elif event_type in {"on_chat_model_end", "on_tool_end", "on_chain_end"}:
+                await trace_recorder.finish_step(
+                    trace, run_id, "completed", output=event.get("data", {}).get("output")
+                )
+            elif event_type.endswith("_error"):
+                await trace_recorder.finish_step(
+                    trace, run_id, "failed", error=event.get("data", {}).get("error")
+                )
+        if event_type == "on_tool_start":
             tool_input = event.get("data", {}).get("input")
             if run_id:
                 tool_inputs[run_id] = tool_input
             await stream.update_task(run_id, tool_live_label(name, tool_input), "in_progress")
-        elif event["event"] == "on_tool_end":
+        elif event_type == "on_tool_end":
             tool_input = tool_inputs.pop(run_id, None) if run_id else None
             output_message = event["data"]["output"]
             content_str = str(getattr(output_message, "content", output_message))
@@ -112,17 +154,18 @@ async def _run_turn(
             await stream.update_task(
                 run_id, tool_done_label(name, tool_input), "complete", output, sources
             )
-        elif event["event"] == "on_chain_start" and name == IMAGE_ANALYSIS_NODE:
+        elif event_type == "on_chain_start" and name == IMAGE_ANALYSIS_NODE:
             # Assumes on_chain_start/on_chain_end share a run_id per node execution, the
             # way on_tool_start/on_tool_end already do -- unverified beyond scripted
             # tests; confirm with a real-model probe if this Task Card looks wrong.
             await stream.update_task(run_id, tool_live_label(name), "in_progress")
-        elif event["event"] == "on_chain_end" and name == IMAGE_ANALYSIS_NODE:
+        elif event_type == "on_chain_end" and name == IMAGE_ANALYSIS_NODE:
             await stream.update_task(run_id, tool_done_label(name), "complete")
     state = await graph.aget_state(config)
     reply = state.values["messages"][-1].content
     # Slack rejects an empty text (no_text error); some models can finish with empty content.
     await stream.finish(reply or EMPTY_REPLY)
+    return str(reply or EMPTY_REPLY)
 
 
 async def _finish_stream(stream: ThinkingStream, markdown_text: str, *, reason: str) -> None:
@@ -145,6 +188,7 @@ async def handle_slack_message(
     open_thinking_stream: OpenThinkingStream,
     download_image: DownloadImage,
     in_flight: InFlightTurns,
+    trace_recorder: TraceRecorder | None = None,
 ) -> None:
     if event.get("user") != settings.slack_allowed_user_id:
         return
@@ -167,18 +211,29 @@ async def handle_slack_message(
     # placeholder posted at open time would stay stuck in front of everything that
     # follows (see ADR 0004). set_status above is Slack's own "is thinking" affordance.
     stream = await open_thinking_stream(channel, thread_id)
+    trace = (
+        await trace_recorder.start_trace(thread_id, event.get("text", ""))
+        if trace_recorder is not None
+        else None
+    )
 
     async def _turn() -> None:
         try:
-            await _run_turn(graph, config, content, stream)
+            reply = await _run_turn(graph, config, content, stream, trace_recorder, trace)
+            if trace_recorder is not None and trace is not None:
+                await trace_recorder.finish_trace(trace, "completed", output=reply)
         except asyncio.CancelledError:
             await _finish_stream(stream, STATUS_RESUMED, reason="cancelling a superseded turn")
+            if trace_recorder is not None and trace is not None:
+                await trace_recorder.finish_trace(trace, "cancelled")
             raise
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "handle_slack_message failed for channel=%s thread_id=%s", channel, thread_id
             )
             await _finish_stream(stream, ERROR_REPLY, reason="reporting a turn failure")
+            if trace_recorder is not None and trace is not None:
+                await trace_recorder.finish_trace(trace, "failed", error=repr(exc))
 
     turn = asyncio.ensure_future(_turn())
     in_flight[thread_id] = turn
@@ -205,7 +260,9 @@ def _make_open_thinking_stream(app: AsyncApp, settings: Settings) -> OpenThinkin
     return open_thinking_stream
 
 
-def _build_app(graph: CompiledStateGraph, settings: Settings) -> AsyncApp:
+def _build_app(
+    graph: CompiledStateGraph, settings: Settings, trace_recorder: TraceRecorder
+) -> AsyncApp:
     app = AsyncApp(token=settings.slack_bot_token)
     in_flight: InFlightTurns = {}
     open_thinking_stream = _make_open_thinking_stream(app, settings)
@@ -237,15 +294,32 @@ def _build_app(graph: CompiledStateGraph, settings: Settings) -> AsyncApp:
             open_thinking_stream=open_thinking_stream,
             download_image=download_image,
             in_flight=in_flight,
+            trace_recorder=trace_recorder,
         )
 
     return app
 
 
-async def _run(graph: CompiledStateGraph, settings: Settings) -> None:
-    app = _build_app(graph, settings)
+async def _run(
+    graph: CompiledStateGraph, settings: Settings, trace_recorder: TraceRecorder
+) -> None:
+    app = _build_app(graph, settings, trace_recorder)
     handler = AsyncSocketModeHandler(app, settings.slack_app_token)
-    await handler.start_async()
+    runner: web.AppRunner | None = None
+    try:
+        runner = web.AppRunner(create_viewer_app(trace_recorder.repository))
+        await runner.setup()
+        await web.TCPSite(runner, settings.trace_viewer_host, settings.trace_viewer_port).start()
+    except Exception:
+        logger.exception("Execution trace viewer failed to start; Slack will continue without it")
+        if runner is not None:
+            await runner.cleanup()
+            runner = None
+    try:
+        await handler.start_async()
+    finally:
+        if runner is not None:
+            await runner.cleanup()
 
 
 def main() -> None:
@@ -267,7 +341,16 @@ def main() -> None:
             await checkpointer.setup()
             store = await build_async_store(pool, settings)
             graph = build_graph(llm, tools, checkpointer, store, skills)
-            await _run(graph, settings)
+            trace_repository = PostgresTraceRepository(pool)
+            try:
+                await trace_repository.setup()
+                trace_recorder = TraceRecorder(trace_repository)
+            except Exception:
+                logger.exception(
+                    "Execution trace storage failed to start; Slack will continue without it"
+                )
+                trace_recorder = TraceRecorder(NullTraceRepository())
+            await _run(graph, settings, trace_recorder)
 
     asyncio.run(_amain())
 

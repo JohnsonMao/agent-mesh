@@ -25,6 +25,8 @@ class Settings:
     slack_bot_token: str
     slack_app_token: str
     slack_allowed_user_id: str
+    trace_viewer_host: str
+    trace_viewer_port: int
 
 
 def load_settings() -> Settings:
@@ -48,4 +50,6 @@ def load_settings() -> Settings:
         slack_bot_token=os.environ.get("SLACK_BOT_TOKEN", ""),
         slack_app_token=os.environ.get("SLACK_APP_TOKEN", ""),
         slack_allowed_user_id=os.environ.get("SLACK_ALLOWED_USER_ID", ""),
+        trace_viewer_host=os.environ.get("TRACE_VIEWER_HOST", "127.0.0.1"),
+        trace_viewer_port=int(os.environ.get("TRACE_VIEWER_PORT", "8000")),
     )

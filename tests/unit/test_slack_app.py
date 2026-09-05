@@ -6,6 +6,7 @@ from conftest import build_test_graph, build_test_settings
 from langchain_core.messages import AIMessage, ToolMessage
 from slack_sdk.models.blocks.block_elements import UrlSourceElement
 
+from execution_traces import InMemoryTraceRepository, TraceRecorder
 from slack_app import InFlightTurns, handle_slack_message
 
 
@@ -176,6 +177,66 @@ async def test_a_tool_call_updates_its_task_from_in_progress_to_complete() -> No
         ("run-1", "📝 記住新事項：I like tea", "complete", "I like tea", None),
     ]
     assert stream.finished == "Got it, I'll remember that."
+
+
+async def test_records_a_completed_turn_and_its_tool_step_without_changing_slack_reply() -> None:
+    graph = build_test_graph([AIMessage(content="unused")])
+    graph.astream_events = _fake_astream_events(  # type: ignore[method-assign]
+        [("run-1", "execute_command", "x" * 9_000, [], {"command": "echo $TOKEN"})]
+    )
+    graph.aget_state = _fake_aget_state("done")  # type: ignore[method-assign]
+    repository = InMemoryTraceRepository()
+    await handle_slack_message(
+        {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "TOKEN=secret"},
+        graph=graph,
+        settings=build_test_settings(),
+        set_status=FakeSetStatus(),
+        open_thinking_stream=FakeOpenThinkingStream(),
+        download_image=FakeDownloadImage(),
+        in_flight={},
+        trace_recorder=TraceRecorder(repository),
+    )
+
+    (trace,) = await repository.list_traces()
+    assert trace.status == "completed"
+    assert trace.output == "done"
+    assert trace.input == "TOKEN=[REDACTED]"
+    (step,) = trace.steps
+    assert step.category == "tool"
+    assert step.status == "completed"
+    assert len(str(step.output)) == 8_000
+
+
+async def test_records_model_and_image_analysis_steps() -> None:
+    graph = build_test_graph([AIMessage(content="unused")])
+
+    async def events(input: dict, config: dict, **kwargs: object):
+        for event_type, name, run_id in (
+            ("on_chain_start", "analyze_images", "image"),
+            ("on_chain_end", "analyze_images", "image"),
+            ("on_chat_model_start", "ChatOpenAI", "model"),
+            ("on_chat_model_end", "ChatOpenAI", "model"),
+        ):
+            yield {"event": event_type, "name": name, "run_id": run_id, "data": {}}
+
+    graph.astream_events = events  # type: ignore[method-assign]
+    graph.aget_state = _fake_aget_state("done")  # type: ignore[method-assign]
+    repository = InMemoryTraceRepository()
+    await handle_slack_message(
+        {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "image"},
+        graph=graph,
+        settings=build_test_settings(),
+        set_status=FakeSetStatus(),
+        open_thinking_stream=FakeOpenThinkingStream(),
+        download_image=FakeDownloadImage(),
+        in_flight={},
+        trace_recorder=TraceRecorder(repository),
+    )
+    (trace,) = await repository.list_traces()
+    assert [(step.category, step.status) for step in trace.steps] == [
+        ("image_analysis", "completed"),
+        ("model", "completed"),
+    ]
 
 
 async def test_web_search_task_card_gets_titles_as_output_and_urls_as_sources() -> None:

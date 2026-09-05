@@ -69,6 +69,8 @@ def build_test_settings(**overrides: Any) -> Settings:
         "slack_bot_token": "xoxb-test",
         "slack_app_token": "xapp-test",
         "slack_allowed_user_id": "U_ALLOWED",
+        "trace_viewer_host": "127.0.0.1",
+        "trace_viewer_port": 8000,
     }
     defaults.update(overrides)
     return Settings(**defaults)

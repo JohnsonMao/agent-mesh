@@ -35,3 +35,11 @@ _Avoid_: Message（Message 是 Turn 的輸入或輸出之一，不是 Turn 本�
 **Thinking Step（思考步驟）**:
 Turn 內 Assistant 執行某個可觀察、有明確起訖的中間處理步驟（例如呼叫外部能力、或對輸入內容做額外處理），不包含「model 還在生成、尚未進入這類步驟」的狀態（那仍算單純的思考中）。是 Assistant 對外呈現執行過程的最小單位。
 _Avoid_: Status（Status 是呈現用的文字，Thinking Step 是背後代表的事件本身）、不要限定只對應到 Tool 呼叫——凡是值得讓使用者看到「目前在做什麼」的中間步驟都算
+
+**Execution Trace（執行軌跡）**:
+一筆對應一個 Turn 的持久化除錯紀錄，保留 `completed`、`failed` 或 `cancelled` 的生命週期、輸入與輸出，以及按時間排序的 Thinking Step，供維運者事後檢視。
+_Avoid_: Log（Log 是未結構化的診斷輸出，不保證能重建一個 Turn）、Conversation（Conversation 是短期對話歷史，不是單次執行紀錄）
+
+**Execution Step（執行步驟）**:
+Execution Trace 內一筆有開始與結束、可選父步驟的可觀察處理紀錄；可對應模型呼叫、Tool 呼叫或強制型處理步驟，並可帶有摘要、耗時與錯誤結果。
+_Avoid_: Thinking Step（Thinking Step 是使用者可見的領域概念；Execution Step 是其為除錯而保存的紀錄）

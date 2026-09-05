@@ -20,6 +20,9 @@ services:
       # `localhost` inside this container is the container itself. LM Studio
       # runs on the host, so use Docker's host gateway name instead.
       LM_STUDIO_BASE_URL: http://host.docker.internal:1234/v1
+      # The process listens on all container interfaces; Docker exposes it only
+      # on the host loopback interface for the maintainer-only viewer.
+      TRACE_VIEWER_HOST: 0.0.0.0
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -31,6 +34,8 @@ services:
       # this Linux container when source is bind-mounted for development.
       - app_venv:/app/.venv
     ipc: host
+    ports:
+      - "127.0.0.1:8000:8000"
 
   postgres:
     image: pgvector/pgvector:pg16
