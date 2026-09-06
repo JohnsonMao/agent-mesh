@@ -1,558 +1,347 @@
-"""Best-effort, OpenTelemetry-shaped execution traces and their local viewer."""
+"""Vendor-neutral, best-effort telemetry for Slack Turns.
 
-import html
-import json
+Phoenix is the trace store and UI. The Assistant only creates safe spans and
+hands them to a bounded OTLP boundary, which may drop work under pressure.
+"""
+
+import asyncio
 import logging
 import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from typing import Protocol, cast
+from typing import Protocol
 
-from aiohttp import web
-from psycopg import AsyncConnection
-from psycopg.rows import DictRow
-from psycopg_pool import AsyncConnectionPool
+import aiohttp
+from google.protobuf.message import Message  # type: ignore[import-untyped]
+from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
+from opentelemetry.proto.common.v1.common_pb2 import KeyValue
 
 logger = logging.getLogger(__name__)
-
 TraceStatus = str
-CONTENT_RETENTION = timedelta(days=14)
-METADATA_RETENTION = timedelta(days=90)
-DEFAULT_COMMAND_OUTPUT_LIMIT = 8_000
-_SECRET_NAME = re.compile(r"(token|secret|password|key)", re.IGNORECASE)
-_BEARER = re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
+DEFAULT_PAYLOAD_LIMIT = 8_000
+_SECRET_NAME = re.compile(r"(token|secret|password|key|credential)", re.I)
+_BEARER = re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+", re.I)
 _SLACK_TOKEN = re.compile(r"xox(?:a|b|p|r|s)-[A-Za-z0-9-]+")
 _NAMED_SECRET = re.compile(
-    r"\b((?=[A-Za-z0-9_]*(?:token|secret|password|key))[A-Za-z_][A-Za-z0-9_]*)=([^\s&]+)",
-    re.IGNORECASE,
+    r"\b((?=[A-Za-z0-9_]*(?:token|secret|password|key))[A-Za-z_][A-Za-z0-9_]*)=([^\s&]+)", re.I
+)
+
+METADATA_ALLOWLIST = frozenset(
+    {
+        "service.name",
+        "service.version",
+        "deployment.environment",
+        "turn.status",
+        "span.category",
+        "model.name",
+        "tool.name",
+        "graph.node",
+        "duration.ms",
+        "token.input",
+        "token.output",
+        "cost.usd",
+        "retry.count",
+        "error.class",
+        "error.fingerprint",
+        "redaction.count",
+        "payload.dropped",
+    }
 )
 
 
 @dataclass(frozen=True)
-class ExecutionStep:
-    step_id: str
-    parent_step_id: str | None
+class TelemetrySpan:
+    trace_id: str
+    span_id: str
+    parent_span_id: str | None
+    name: str
     category: str
     status: TraceStatus
     started_at: datetime
     ended_at: datetime | None = None
-    input: object | None = None
-    output: object | None = None
     attributes: dict[str, object] = field(default_factory=dict)
-    error: str | None = None
-
-    @property
-    def duration_seconds(self) -> float | None:
-        if self.ended_at is None:
-            return None
-        return (self.ended_at - self.started_at).total_seconds()
+    content: dict[str, object] = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
-class ExecutionTrace:
-    trace_id: str
-    conversation_id: str
-    status: TraceStatus
-    started_at: datetime
-    ended_at: datetime | None = None
-    input: object | None = None
-    output: object | None = None
-    attributes: dict[str, object] = field(default_factory=dict)
-    error: str | None = None
-    steps: tuple[ExecutionStep, ...] = ()
+class SpanExporter(Protocol):
+    async def export(self, spans: list[TelemetrySpan]) -> None: ...
 
 
-class TraceRepository(Protocol):
-    async def create_trace(self, trace: ExecutionTrace) -> None: ...
-
-    async def update_trace(self, trace: ExecutionTrace) -> None: ...
-
-    async def create_step(self, trace_id: str, step: ExecutionStep) -> None: ...
-
-    async def update_step(self, trace_id: str, step: ExecutionStep) -> None: ...
-
-    async def list_traces(
-        self,
-        *,
-        status: str | None = None,
-        conversation_id: str | None = None,
-        started_after: datetime | None = None,
-        started_before: datetime | None = None,
-    ) -> list[ExecutionTrace]: ...
-
-    async def get_trace(self, trace_id: str) -> ExecutionTrace | None: ...
-
-    async def cleanup(self, content_before: datetime, metadata_before: datetime) -> None: ...
-
-
-class InMemoryTraceRepository:
-    """A repository implementation for unit tests and local behavior checks."""
+class InMemorySpanExporter:
+    """Test collector at the adapter boundary used by OTLP."""
 
     def __init__(self) -> None:
-        self.traces: dict[str, ExecutionTrace] = {}
+        self.spans: list[TelemetrySpan] = []
 
-    async def create_trace(self, trace: ExecutionTrace) -> None:
-        self.traces[trace.trace_id] = trace
+    async def export(self, spans: list[TelemetrySpan]) -> None:
+        self.spans.extend(spans)
 
-    async def update_trace(self, trace: ExecutionTrace) -> None:
-        self.traces[trace.trace_id] = replace(trace, steps=self.traces[trace.trace_id].steps)
 
-    async def create_step(self, trace_id: str, step: ExecutionStep) -> None:
-        trace = self.traces[trace_id]
-        self.traces[trace_id] = replace(trace, steps=(*trace.steps, step))
+class OtlpHttpExporter:
+    """OTLP/HTTP adapter; a replacement backend changes only this class."""
 
-    async def update_step(self, trace_id: str, step: ExecutionStep) -> None:
-        trace = self.traces[trace_id]
-        self.traces[trace_id] = replace(
-            trace,
-            steps=tuple(step if item.step_id == step.step_id else item for item in trace.steps),
-        )
+    def __init__(self, endpoint: str, timeout_seconds: float = 2.0) -> None:
+        self.endpoint = endpoint.rstrip("/") + "/v1/traces"
+        self.timeout_seconds = timeout_seconds
 
-    async def list_traces(
+    async def export(self, spans: list[TelemetrySpan]) -> None:
+        payload = _otlp_request(spans).SerializeToString()
+        timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                self.endpoint, data=payload, headers={"Content-Type": "application/x-protobuf"}
+            ) as response:
+                response.raise_for_status()
+
+
+class BoundedBatchExporter:
+    """A non-blocking bounded queue with structured loss diagnostics."""
+
+    def __init__(
         self,
+        exporter: SpanExporter,
         *,
-        status: str | None = None,
-        conversation_id: str | None = None,
-        started_after: datetime | None = None,
-        started_before: datetime | None = None,
-    ) -> list[ExecutionTrace]:
-        traces = list(self.traces.values())
-        return sorted(
-            (
-                trace
-                for trace in traces
-                if (not status or trace.status == status)
-                and (not conversation_id or trace.conversation_id == conversation_id)
-                and (not started_after or trace.started_at >= started_after)
-                and (not started_before or trace.started_at <= started_before)
-            ),
-            key=lambda trace: trace.started_at,
-            reverse=True,
-        )
+        max_queue_size: int = 512,
+        batch_size: int = 64,
+        alert_policy: "PersistentAlertPolicy | None" = None,
+    ) -> None:
+        self.exporter, self.queue = exporter, asyncio.Queue[TelemetrySpan](maxsize=max_queue_size)
+        self.batch_size = batch_size
+        self.alert_policy = alert_policy
+        self.dropped_events = self.export_failures = self.queue_saturation_events = 0
+        self._worker: asyncio.Task[None] | None = None
 
-    async def get_trace(self, trace_id: str) -> ExecutionTrace | None:
-        return self.traces.get(trace_id)
+    def submit(self, span: TelemetrySpan) -> None:
+        try:
+            self.queue.put_nowait(span)
+        except asyncio.QueueFull:
+            self.dropped_events += 1
+            self.queue_saturation_events += 1
+            logger.warning("telemetry queue saturated; dropping span", extra={"span": span.name})
+            self._observe("queue_saturation")
+            return
+        if self._worker is None or self._worker.done():
+            self._worker = asyncio.create_task(self._drain())
 
-    async def cleanup(self, content_before: datetime, metadata_before: datetime) -> None:
-        for trace_id, trace in tuple(self.traces.items()):
-            if trace.ended_at and trace.ended_at < metadata_before:
-                del self.traces[trace_id]
-            elif trace.ended_at and trace.ended_at < content_before:
-                self.traces[trace_id] = replace(
-                    trace,
-                    input=None,
-                    output=None,
-                    error=None,
-                    steps=tuple(
-                        replace(step, input=None, output=None, error=None) for step in trace.steps
-                    ),
-                )
+    async def flush(self) -> None:
+        if self._worker is not None:
+            await self._worker
 
+    async def _drain(self) -> None:
+        while not self.queue.empty():
+            batch = [self.queue.get_nowait()]
+            while len(batch) < self.batch_size and not self.queue.empty():
+                batch.append(self.queue.get_nowait())
+            try:
+                await self.exporter.export(batch)
+            except Exception:
+                self.export_failures += len(batch)
+                logger.exception("telemetry export failed", extra={"span_count": len(batch)})
+                self._observe("export_failure")
+            else:
+                self._recover("export_failure")
 
-class NullTraceRepository:
-    """Keeps trace capture non-fatal when PostgreSQL is temporarily unavailable."""
+    def _observe(self, signal: str) -> None:
+        if self.alert_policy is not None:
+            self.alert_policy.observe(signal)
 
-    async def create_trace(self, trace: ExecutionTrace) -> None:
-        return None
-
-    async def update_trace(self, trace: ExecutionTrace) -> None:
-        return None
-
-    async def create_step(self, trace_id: str, step: ExecutionStep) -> None:
-        return None
-
-    async def update_step(self, trace_id: str, step: ExecutionStep) -> None:
-        return None
-
-    async def list_traces(
-        self,
-        *,
-        status: str | None = None,
-        conversation_id: str | None = None,
-        started_after: datetime | None = None,
-        started_before: datetime | None = None,
-    ) -> list[ExecutionTrace]:
-        return []
-
-    async def get_trace(self, trace_id: str) -> ExecutionTrace | None:
-        return None
-
-    async def cleanup(self, content_before: datetime, metadata_before: datetime) -> None:
-        return None
+    def _recover(self, signal: str) -> None:
+        if self.alert_policy is not None:
+            self.alert_policy.recover(signal)
 
 
-class PostgresTraceRepository:
-    """PostgreSQL storage. Setup is intentionally idempotent for this small app."""
+class PersistentAlertPolicy:
+    """Alerts once only after a telemetry signal breaches for five minutes."""
 
-    def __init__(self, pool: AsyncConnectionPool[AsyncConnection[DictRow]]) -> None:
-        self.pool = pool
+    def __init__(
+        self, notify: Callable[[str], Awaitable[None]], *, now: Callable[[], datetime] | None = None
+    ) -> None:
+        self.notify, self.now = notify, now or (lambda: datetime.now(UTC))
+        self._started: dict[str, datetime] = {}
+        self._alerted: set[str] = set()
 
-    async def setup(self) -> None:
-        async with self.pool.connection() as conn:
-            await conn.execute(
-                """CREATE TABLE IF NOT EXISTS execution_traces (
-                    trace_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, status TEXT NOT NULL,
-                    started_at TIMESTAMPTZ NOT NULL, ended_at TIMESTAMPTZ,
-                    input JSONB, output JSONB, attributes JSONB NOT NULL DEFAULT '{}', error TEXT
-                )"""
-            )
-            await conn.execute(
-                """CREATE TABLE IF NOT EXISTS execution_steps (
-                    trace_id TEXT NOT NULL REFERENCES execution_traces(trace_id) ON DELETE CASCADE,
-                    step_id TEXT NOT NULL, parent_step_id TEXT, category TEXT NOT NULL, status TEXT NOT NULL,
-                    started_at TIMESTAMPTZ NOT NULL, ended_at TIMESTAMPTZ,
-                    input JSONB, output JSONB, attributes JSONB NOT NULL DEFAULT '{}', error TEXT,
-                    PRIMARY KEY(trace_id, step_id)
-                )"""
-            )
-            await conn.execute(
-                "CREATE INDEX IF NOT EXISTS execution_traces_list_idx "
-                "ON execution_traces (started_at DESC, status, conversation_id)"
+    def observe(self, signal: str) -> None:
+        started = self._started.setdefault(signal, self.now())
+        if signal not in self._alerted and self.now() - started >= timedelta(minutes=5):
+            self._alerted.add(signal)
+            asyncio.ensure_future(
+                self.notify(f"Observability alert: {signal} has persisted for five minutes.")
             )
 
-    async def create_trace(self, trace: ExecutionTrace) -> None:
-        async with self.pool.connection() as conn:
-            await conn.execute(
-                "INSERT INTO execution_traces VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                _trace_values(trace),
-            )
-
-    async def update_trace(self, trace: ExecutionTrace) -> None:
-        async with self.pool.connection() as conn:
-            await conn.execute(
-                """UPDATE execution_traces SET status=%s, ended_at=%s, input=%s, output=%s,
-                   attributes=%s, error=%s WHERE trace_id=%s""",
-                (
-                    trace.status,
-                    trace.ended_at,
-                    _json(trace.input),
-                    _json(trace.output),
-                    _json(trace.attributes),
-                    trace.error,
-                    trace.trace_id,
-                ),
-            )
-
-    async def create_step(self, trace_id: str, step: ExecutionStep) -> None:
-        async with self.pool.connection() as conn:
-            await conn.execute(
-                "INSERT INTO execution_steps VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                (trace_id, *_step_values(step)),
-            )
-
-    async def update_step(self, trace_id: str, step: ExecutionStep) -> None:
-        async with self.pool.connection() as conn:
-            await conn.execute(
-                """UPDATE execution_steps SET parent_step_id=%s, category=%s, status=%s,
-                   started_at=%s, ended_at=%s, input=%s, output=%s, attributes=%s, error=%s
-                   WHERE trace_id=%s AND step_id=%s""",
-                (*_step_values(step)[1:], trace_id, step.step_id),
-            )
-
-    async def list_traces(self, **filters: object) -> list[ExecutionTrace]:
-        clauses, params = [], []
-        for column, filter_name, operator in (
-            ("status", "status", "="),
-            ("conversation_id", "conversation_id", "="),
-            ("started_at", "started_after", ">="),
-            ("started_at", "started_before", "<="),
-        ):
-            if value := filters.get(filter_name):
-                clauses.append(f"{column} {operator} %s")
-                params.append(value)
-        query = "SELECT * FROM execution_traces"
-        if clauses:
-            query += " WHERE " + " AND ".join(clauses)
-        query += " ORDER BY started_at DESC"
-        async with self.pool.connection() as conn:
-            rows = await (await conn.execute(query, params)).fetchall()
-        return [_trace_from_row(cast(Mapping[str, object], row)) for row in rows]
-
-    async def get_trace(self, trace_id: str) -> ExecutionTrace | None:
-        async with self.pool.connection() as conn:
-            trace_row = await (
-                await conn.execute("SELECT * FROM execution_traces WHERE trace_id=%s", (trace_id,))
-            ).fetchone()
-            if trace_row is None:
-                return None
-            step_rows = await (
-                await conn.execute(
-                    "SELECT * FROM execution_steps WHERE trace_id=%s ORDER BY started_at, step_id",
-                    (trace_id,),
-                )
-            ).fetchall()
-        return replace(
-            _trace_from_row(cast(Mapping[str, object], trace_row)),
-            steps=tuple(_step_from_row(cast(Mapping[str, object], row)) for row in step_rows),
-        )
-
-    async def cleanup(self, content_before: datetime, metadata_before: datetime) -> None:
-        async with self.pool.connection() as conn:
-            await conn.execute(
-                "DELETE FROM execution_traces WHERE ended_at < %s", (metadata_before,)
-            )
-            await conn.execute(
-                "UPDATE execution_traces SET input=NULL, output=NULL, error=NULL WHERE ended_at < %s",
-                (content_before,),
-            )
-            await conn.execute(
-                "UPDATE execution_steps SET input=NULL, output=NULL, error=NULL WHERE ended_at < %s",
-                (content_before,),
-            )
+    def recover(self, signal: str) -> None:
+        self._started.pop(signal, None)
+        self._alerted.discard(signal)
 
 
-def _json(value: object | None) -> str | None:
-    return None if value is None else json.dumps(value, default=str)
-
-
-def _trace_values(trace: ExecutionTrace) -> tuple[object, ...]:
-    return (
-        trace.trace_id,
-        trace.conversation_id,
-        trace.status,
-        trace.started_at,
-        trace.ended_at,
-        _json(trace.input),
-        _json(trace.output),
-        _json(trace.attributes),
-        trace.error,
-    )
-
-
-def _step_values(step: ExecutionStep) -> tuple[object, ...]:
-    return (
-        step.step_id,
-        step.parent_step_id,
-        step.category,
-        step.status,
-        step.started_at,
-        step.ended_at,
-        _json(step.input),
-        _json(step.output),
-        _json(step.attributes),
-        step.error,
-    )
-
-
-def _trace_from_row(row: Mapping[str, object]) -> ExecutionTrace:
-    return ExecutionTrace(**dict(row), steps=())  # type: ignore[arg-type]
-
-
-def _step_from_row(row: Mapping[str, object]) -> ExecutionStep:
-    return ExecutionStep(**dict(row))  # type: ignore[arg-type]
-
-
-def safe_value(
-    value: object, *, command_output_limit: int = DEFAULT_COMMAND_OUTPUT_LIMIT
-) -> object:
-    """Recursively redact common secrets before a value reaches persistent storage."""
+def safe_value(value: object, *, payload_limit: int = DEFAULT_PAYLOAD_LIMIT) -> object:
+    """Redact recursively and limit every exported content value."""
     if isinstance(value, Mapping):
         return {
             str(key): "[REDACTED]"
             if _SECRET_NAME.search(str(key))
-            else safe_value(item, command_output_limit=command_output_limit)
+            else safe_value(item, payload_limit=payload_limit)
             for key, item in value.items()
         }
     if isinstance(value, (list, tuple)):
-        return [safe_value(item, command_output_limit=command_output_limit) for item in value]
-    text = str(value)
-    text = _NAMED_SECRET.sub(r"\1=[REDACTED]", text)
-    text = _SLACK_TOKEN.sub("[REDACTED]", _BEARER.sub("Bearer [REDACTED]", text))
-    return text
+        return [safe_value(item, payload_limit=payload_limit) for item in value]
+    text = _NAMED_SECRET.sub(r"\1=[REDACTED]", str(value))
+    return _SLACK_TOKEN.sub("[REDACTED]", _BEARER.sub("Bearer [REDACTED]", text))[:payload_limit]
 
 
 class TraceRecorder:
-    """Turns repository errors into diagnostic logs so tracing never blocks Slack."""
+    """Correlates one Slack Turn with a root span and safe child spans."""
 
     def __init__(
         self,
-        repository: TraceRepository,
+        exporter: BoundedBatchExporter,
         *,
         now: Callable[[], datetime] | None = None,
-        command_output_limit: int = DEFAULT_COMMAND_OUTPUT_LIMIT,
+        payload_limit: int = DEFAULT_PAYLOAD_LIMIT,
     ) -> None:
-        self.repository = repository
-        self.now = now or (lambda: datetime.now(UTC))
-        self.command_output_limit = command_output_limit
-        self._traces: dict[str, ExecutionTrace] = {}
-        self._steps: dict[tuple[str, str], ExecutionStep] = {}
-
-    async def start_trace(self, conversation_id: str, input: object) -> ExecutionTrace:
-        trace = ExecutionTrace(
-            uuid.uuid4().hex, conversation_id, "running", self.now(), input=safe_value(input)
+        self.exporter, self.now, self.payload_limit = (
+            exporter,
+            now or (lambda: datetime.now(UTC)),
+            payload_limit,
         )
-        self._traces[trace.trace_id] = trace
-        await self._best_effort("creating execution trace", self.repository.create_trace(trace))
-        return trace
+        self._spans: dict[tuple[str, str], TelemetrySpan] = {}
+
+    async def start_trace(self, conversation_id: str, input: object) -> TelemetrySpan:
+        del conversation_id  # Slack identity is intentionally not metadata.
+        root = TelemetrySpan(
+            uuid.uuid4().hex,
+            uuid.uuid4().hex[:16],
+            None,
+            "slack.turn",
+            "turn",
+            "running",
+            self.now(),
+            attributes={"service.name": "assistant", "span.category": "turn"},
+            content={"input": safe_value(input, payload_limit=self.payload_limit)},
+        )
+        self._spans[(root.trace_id, root.span_id)] = root
+        self.exporter.submit(root)
+        return root
 
     async def finish_trace(
         self,
-        trace: ExecutionTrace,
+        trace: TelemetrySpan,
         status: TraceStatus,
         *,
         output: object | None = None,
         error: object | None = None,
     ) -> None:
-        current = self._traces.get(trace.trace_id, trace)
-        finished = replace(
-            current,
-            status=status,
-            ended_at=self.now(),
-            output=safe_value(output) if output is not None else None,
-            error=str(safe_value(error)) if error else None,
-        )
-        self._traces[trace.trace_id] = finished
-        await self._best_effort(
-            "finalizing execution trace", self.repository.update_trace(finished)
-        )
-        await self._best_effort(
-            "cleaning execution traces",
-            self.repository.cleanup(
-                self.now() - CONTENT_RETENTION, self.now() - METADATA_RETENTION
-            ),
-        )
+        self._finish(trace, status, output, error)
 
     async def start_step(
         self,
-        trace: ExecutionTrace,
+        trace: TelemetrySpan,
         step_id: str,
         parent_step_id: str | None,
         category: str,
         input: object | None = None,
         attributes: dict[str, object] | None = None,
     ) -> None:
-        safe_attributes = safe_value(attributes or {})
-        assert isinstance(safe_attributes, Mapping)
-        step = ExecutionStep(
-            step_id,
-            parent_step_id,
+        allowed = _safe_metadata(attributes or {}, category)
+        name = str(
+            allowed.get("tool.name")
+            or allowed.get("model.name")
+            or allowed.get("graph.node")
+            or category
+        )
+        parent = self._spans.get((trace.trace_id, parent_step_id or ""))
+        span = TelemetrySpan(
+            trace.trace_id,
+            uuid.uuid4().hex[:16],
+            parent.span_id if parent else trace.span_id,
+            name,
             category,
             "running",
             self.now(),
-            input=safe_value(input) if input is not None else None,
-            attributes=dict(safe_attributes),
+            attributes=allowed,
+            content={"input": safe_value(input, payload_limit=self.payload_limit)}
+            if input is not None
+            else {},
         )
-        self._steps[(trace.trace_id, step_id)] = step
-        await self._best_effort(
-            "creating execution step", self.repository.create_step(trace.trace_id, step)
-        )
+        self._spans[(trace.trace_id, step_id)] = span
+        self.exporter.submit(span)
 
     async def finish_step(
         self,
-        trace: ExecutionTrace,
+        trace: TelemetrySpan,
         step_id: str,
         status: TraceStatus,
         *,
         output: object | None = None,
         error: object | None = None,
     ) -> None:
-        previous = self._steps.get((trace.trace_id, step_id))
-        if previous is None:
-            return
-        if (
-            previous.category == "tool"
-            and previous.attributes.get("name") == "execute_command"
-            and output is not None
-        ):
-            output = str(output)[: self.command_output_limit]
-        step = replace(
-            previous,
-            status=status,
-            ended_at=self.now(),
-            output=safe_value(output) if output is not None else None,
-            error=str(safe_value(error)) if error else None,
-        )
-        self._steps[(trace.trace_id, step_id)] = step
-        await self._best_effort(
-            "finalizing execution step", self.repository.update_step(trace.trace_id, step)
-        )
+        span = self._spans.get((trace.trace_id, step_id))
+        if span is not None:
+            self._finish(span, status, output, error)
 
-    async def _best_effort(self, operation: str, awaitable: Awaitable[None]) -> None:
-        try:
-            await awaitable
-        except Exception:
-            logger.exception("Failed while %s", operation)
-
-    async def cleanup(self, now: datetime | None = None) -> None:
-        """Run retention from the terminal-Turn hook or a controllable test clock."""
-        moment = now or self.now()
-        await self._best_effort(
-            "cleaning execution traces",
-            self.repository.cleanup(moment - CONTENT_RETENTION, moment - METADATA_RETENTION),
-        )
-
-
-def create_viewer_app(repository: TraceRepository) -> web.Application:
-    app = web.Application()
-
-    async def list_view(request: web.Request) -> web.Response:
-        try:
-            traces = await repository.list_traces(
-                status=request.query.get("status"),
-                conversation_id=request.query.get("conversation_id"),
-                started_after=_parse_time(request.query.get("started_after")),
-                started_before=_parse_time(request.query.get("started_before")),
+    def _finish(
+        self, span: TelemetrySpan, status: TraceStatus, output: object | None, error: object | None
+    ) -> None:
+        content, attrs = dict(span.content), dict(span.attributes)
+        if output is not None:
+            content["output"] = safe_value(output, payload_limit=self.payload_limit)
+        attrs["turn.status"] = status
+        if error is not None:
+            attrs["error.class"] = (
+                type(error).__name__ if isinstance(error, BaseException) else "error"
             )
-            return web.Response(text=_list_html(traces, request.query), content_type="text/html")
-        except Exception:
-            logger.exception("Execution trace viewer list failed")
-            return web.Response(
-                status=503, text="Execution trace viewer is temporarily unavailable"
-            )
-
-    async def detail_view(request: web.Request) -> web.Response:
-        try:
-            trace = await repository.get_trace(request.match_info["trace_id"])
-            if trace is None:
-                raise web.HTTPNotFound()
-            return web.Response(text=_detail_html(trace), content_type="text/html")
-        except web.HTTPException:
-            raise
-        except Exception:
-            logger.exception("Execution trace viewer detail failed")
-            return web.Response(
-                status=503, text="Execution trace viewer is temporarily unavailable"
-            )
-
-    app.router.add_get("/", list_view)
-    app.router.add_get("/traces", list_view)
-    app.router.add_get("/traces/{trace_id}", detail_view)
-    return app
-
-
-def _parse_time(value: str | None) -> datetime | None:
-    return datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None
-
-
-def _display(value: object | None) -> str:
-    return "—" if value is None else html.escape(json.dumps(value, indent=2, default=str))
-
-
-def _list_html(traces: list[ExecutionTrace], query: Mapping[str, str]) -> str:
-    rows = "".join(
-        f'<tr><td><a href="/traces/{html.escape(trace.trace_id)}">{html.escape(trace.trace_id)}</a></td><td>{html.escape(trace.status)}</td><td>{html.escape(trace.conversation_id)}</td><td>{trace.started_at.isoformat()}</td></tr>'
-        for trace in traces
-    )
-
-    def field(name: str) -> str:
-        return html.escape(query.get(name, ""))
-
-    return f'''<!doctype html><title>Execution traces</title><h1>Execution traces</h1>
-<form action="/traces"><label>Status <select name="status"><option value="">all</option>{"".join(f'<option value="{status}"{" selected" if field("status") == status else ""}>{status}</option>' for status in ("completed", "failed", "cancelled"))}</select></label>
-<label>Conversation <input name="conversation_id" value="{field("conversation_id")}"></label>
-<label>After <input name="started_after" value="{field("started_after")}"></label>
-<label>Before <input name="started_before" value="{field("started_before")}"></label><button>Filter</button></form>
-<p>Refreshes every 5 seconds.</p><table><tr><th>Trace</th><th>Status</th><th>Conversation</th><th>Started</th></tr>{rows}</table><script>setInterval(() => location.reload(), 5000)</script>'''
-
-
-def _detail_html(trace: ExecutionTrace) -> str:
-    def step_html(step: ExecutionStep) -> str:
-        duration = (
-            f"{step.duration_seconds:.3f}s" if step.duration_seconds is not None else "in progress"
+        finished = replace(
+            span, status=status, ended_at=self.now(), attributes=attrs, content=content
         )
-        return f"<section><h2>{html.escape(step.step_id)} · {html.escape(step.category)} · {html.escape(step.status)}</h2><p>parent: {html.escape(step.parent_step_id or '—')} · started: {step.started_at.isoformat()} · ended: {step.ended_at.isoformat() if step.ended_at else '—'} · duration: {duration}</p><h3>Attributes</h3><pre>{_display(step.attributes)}</pre><h3>Input</h3><pre>{_display(step.input)}</pre><h3>Output</h3><pre>{_display(step.output)}</pre><h3>Error</h3><pre>{_display(step.error)}</pre></section>"
+        for key, current in self._spans.items():
+            if current is span:
+                self._spans[key] = finished
+                break
+        self.exporter.submit(finished)
 
-    steps = "".join(step_html(step) for step in trace.steps)
-    return f'<!doctype html><title>{html.escape(trace.trace_id)}</title><a href="/traces">← traces</a><h1>{html.escape(trace.trace_id)}</h1><p>{html.escape(trace.status)} · {html.escape(trace.conversation_id)} · started: {trace.started_at.isoformat()} · ended: {trace.ended_at.isoformat() if trace.ended_at else "—"}</p><h2>Attributes</h2><pre>{_display(trace.attributes)}</pre><h2>Input</h2><pre>{_display(trace.input)}</pre><h2>Output</h2><pre>{_display(trace.output)}</pre><h2>Error</h2><pre>{_display(trace.error)}</pre>{steps}'
+
+def _safe_metadata(attributes: Mapping[str, object], category: str) -> dict[str, object]:
+    alias = {
+        "name": "tool.name"
+        if category == "tool"
+        else "model.name"
+        if category == "model"
+        else "graph.node"
+    }
+    result: dict[str, object] = {"span.category": category}
+    for key, value in attributes.items():
+        allowed = alias.get(key, key)
+        if allowed in METADATA_ALLOWLIST:
+            result[allowed] = safe_value(value)
+    return result
+
+
+def _otlp_request(spans: list[TelemetrySpan]) -> ExportTraceServiceRequest:
+    request = ExportTraceServiceRequest()
+    scope_spans = request.resource_spans.add().scope_spans.add()
+    for span in spans:
+        target = scope_spans.spans.add()
+        target.trace_id = bytes.fromhex(span.trace_id)
+        target.span_id = bytes.fromhex(span.span_id)
+        if span.parent_span_id:
+            target.parent_span_id = bytes.fromhex(span.parent_span_id)
+        target.name = span.name
+        target.start_time_unix_nano = int(span.started_at.timestamp() * 1_000_000_000)
+        if span.ended_at is not None:
+            target.end_time_unix_nano = int(span.ended_at.timestamp() * 1_000_000_000)
+        # OpenTelemetry StatusCode: 0 = unset, 2 = error.
+        target.status.code = 2 if span.status == "failed" else 0
+        _add_otlp_attributes(target, span)
+    return request
+
+
+def _add_otlp_attributes(target: Message, span: TelemetrySpan) -> None:
+    attributes = {
+        **span.attributes,
+        **{f"content.{key}": value for key, value in span.content.items()},
+    }
+    for key, value in attributes.items():
+        attribute = target.attributes.add()
+        attribute.CopyFrom(KeyValue(key=key))
+        attribute.value.string_value = str(value)

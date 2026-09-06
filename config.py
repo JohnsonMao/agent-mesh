@@ -25,8 +25,9 @@ class Settings:
     slack_bot_token: str
     slack_app_token: str
     slack_allowed_user_id: str
-    trace_viewer_host: str
-    trace_viewer_port: int
+    observability_otlp_endpoint: str
+    observability_queue_size: int
+    observability_maintenance_channel: str
 
 
 def load_settings() -> Settings:
@@ -50,6 +51,9 @@ def load_settings() -> Settings:
         slack_bot_token=os.environ.get("SLACK_BOT_TOKEN", ""),
         slack_app_token=os.environ.get("SLACK_APP_TOKEN", ""),
         slack_allowed_user_id=os.environ.get("SLACK_ALLOWED_USER_ID", ""),
-        trace_viewer_host=os.environ.get("TRACE_VIEWER_HOST", "127.0.0.1"),
-        trace_viewer_port=int(os.environ.get("TRACE_VIEWER_PORT", "8000")),
+        observability_otlp_endpoint=os.environ.get(
+            "OBSERVABILITY_OTLP_ENDPOINT", "http://127.0.0.1:6006"
+        ),
+        observability_queue_size=int(os.environ.get("OBSERVABILITY_QUEUE_SIZE", "512")),
+        observability_maintenance_channel=os.environ.get("OBSERVABILITY_MAINTENANCE_CHANNEL", ""),
     )

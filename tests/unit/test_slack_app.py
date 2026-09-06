@@ -6,7 +6,7 @@ from conftest import build_test_graph, build_test_settings
 from langchain_core.messages import AIMessage, ToolMessage
 from slack_sdk.models.blocks.block_elements import UrlSourceElement
 
-from execution_traces import InMemoryTraceRepository, TraceRecorder
+from execution_traces import BoundedBatchExporter, InMemorySpanExporter, TraceRecorder
 from slack_app import InFlightTurns, handle_slack_message
 
 
@@ -185,7 +185,8 @@ async def test_records_a_completed_turn_and_its_tool_step_without_changing_slack
         [("run-1", "execute_command", "x" * 9_000, [], {"command": "echo $TOKEN"})]
     )
     graph.aget_state = _fake_aget_state("done")  # type: ignore[method-assign]
-    repository = InMemoryTraceRepository()
+    collector = InMemorySpanExporter()
+    exporter = BoundedBatchExporter(collector)
     await handle_slack_message(
         {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "TOKEN=secret"},
         graph=graph,
@@ -194,17 +195,18 @@ async def test_records_a_completed_turn_and_its_tool_step_without_changing_slack
         open_thinking_stream=FakeOpenThinkingStream(),
         download_image=FakeDownloadImage(),
         in_flight={},
-        trace_recorder=TraceRecorder(repository),
+        trace_recorder=TraceRecorder(exporter),
     )
 
-    (trace,) = await repository.list_traces()
-    assert trace.status == "completed"
-    assert trace.output == "done"
-    assert trace.input == "TOKEN=[REDACTED]"
-    (step,) = trace.steps
-    assert step.category == "tool"
+    await exporter.flush()
+    terminal = [span for span in collector.spans if span.ended_at]
+    root = next(span for span in terminal if span.category == "turn")
+    step = next(span for span in terminal if span.category == "tool")
+    assert root.status == "completed"
+    assert root.content["output"] == "done"
+    assert root.content["input"] == "TOKEN=[REDACTED]"
     assert step.status == "completed"
-    assert len(str(step.output)) == 8_000
+    assert len(str(step.content["output"])) == 8_000
 
 
 async def test_records_model_and_image_analysis_steps() -> None:
@@ -221,7 +223,8 @@ async def test_records_model_and_image_analysis_steps() -> None:
 
     graph.astream_events = events  # type: ignore[method-assign]
     graph.aget_state = _fake_aget_state("done")  # type: ignore[method-assign]
-    repository = InMemoryTraceRepository()
+    collector = InMemorySpanExporter()
+    exporter = BoundedBatchExporter(collector)
     await handle_slack_message(
         {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "image"},
         graph=graph,
@@ -230,10 +233,11 @@ async def test_records_model_and_image_analysis_steps() -> None:
         open_thinking_stream=FakeOpenThinkingStream(),
         download_image=FakeDownloadImage(),
         in_flight={},
-        trace_recorder=TraceRecorder(repository),
+        trace_recorder=TraceRecorder(exporter),
     )
-    (trace,) = await repository.list_traces()
-    assert [(step.category, step.status) for step in trace.steps] == [
+    await exporter.flush()
+    terminal = [span for span in collector.spans if span.ended_at]
+    assert [(span.category, span.status) for span in terminal if span.category != "turn"] == [
         ("image_analysis", "completed"),
         ("model", "completed"),
     ]

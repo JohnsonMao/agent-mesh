@@ -17,12 +17,10 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/assistant
+      OBSERVABILITY_OTLP_ENDPOINT: http://phoenix:6006
       # `localhost` inside this container is the container itself. LM Studio
       # runs on the host, so use Docker's host gateway name instead.
       LM_STUDIO_BASE_URL: http://host.docker.internal:1234/v1
-      # The process listens on all container interfaces; Docker exposes it only
-      # on the host loopback interface for the maintainer-only viewer.
-      TRACE_VIEWER_HOST: 0.0.0.0
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -34,8 +32,23 @@ services:
       # this Linux container when source is bind-mounted for development.
       - app_venv:/app/.venv
     ipc: host
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: assistant-phoenix
+    restart: unless-stopped
+    environment:
+      PHOENIX_SQL_DATABASE_URL: postgresql://phoenix:phoenix@postgres:5432/phoenix
+      # Phoenix applies its supported trace retention policy at its own storage
+      # boundary; application data is never written to its database directly.
+      PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: "90"
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
-      - "127.0.0.1:8000:8000"
+      # Initial release is intentionally local-only. Put OIDC-enabled reverse
+      # proxy in front before exposing this service to a private network.
+      - "127.0.0.1:6006:6006"
 
   postgres:
     image: pgvector/pgvector:pg16
@@ -45,10 +58,11 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: assistant
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d assistant"]
       interval: 5s

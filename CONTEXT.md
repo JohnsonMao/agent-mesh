@@ -43,3 +43,15 @@ _Avoid_: Log（Log 是未結構化的診斷輸出，不保證能重建一個 Tur
 **Execution Step（執行步驟）**:
 Execution Trace 內一筆有開始與結束、可選父步驟的可觀察處理紀錄；可對應模型呼叫、Tool 呼叫或強制型處理步驟，並可帶有摘要、耗時與錯誤結果。
 _Avoid_: Thinking Step（Thinking Step 是使用者可見的領域概念；Execution Step 是其為除錯而保存的紀錄）
+
+**Observability Platform（可觀測平台）**:
+與 Assistant／Slack app 分開部署、接收並查詢 Execution Trace 的內網服務；它提供維運者檢視即時與歷史執行情況的介面。
+_Avoid_: Monitoring Dashboard（只指其中的視覺介面）、Trace Viewer（只指單筆軌跡檢視）
+
+**Trace Content（軌跡內容）**:
+為重現或深入除錯而保存的經遮罩輸入、輸出、工具參數、工具結果與錯誤本文；保存期限短於 Trace Metadata，且原始內容永不離開 Assistant。
+_Avoid_: Metadata、Raw Payload
+
+**Trace Metadata（軌跡中繼資料）**:
+不含對話或工具內容的 allowlist 執行索引，包括關聯識別、時間、狀態、系統與 Agent 維度、成本和遮罩統計；供長期篩選、彙總與診斷使用。
+_Avoid_: Attributes（未受限制的任意欄位）
