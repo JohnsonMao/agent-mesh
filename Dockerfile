@@ -36,5 +36,7 @@ RUN chown -R pwuser:pwuser /app/.venv
 # Copy application source code
 COPY . .
 
-# Default command starts the Slack app
-CMD ["uv", "run", "--no-sync", "python", "slack_app.py"]
+# The named development virtualenv can outlive an image rebuild. Let uv reconcile
+# it with the frozen lockfile before launching, so new runtime dependencies are
+# available without manually deleting the volume.
+CMD ["uv", "run", "--frozen", "--no-dev", "python", "slack_app.py"]
