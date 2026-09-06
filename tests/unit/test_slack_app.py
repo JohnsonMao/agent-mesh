@@ -241,6 +241,126 @@ async def test_records_model_and_image_analysis_steps() -> None:
         ("image_analysis", "completed"),
         ("model", "completed"),
     ]
+    root = next(span for span in terminal if span.category == "turn")
+    assert root.attributes["turn.model_usage.completeness"] == "unavailable"
+
+
+async def test_model_usage_and_message_sent_time_are_normalised_for_telemetry() -> None:
+    graph = build_test_graph([AIMessage(content="unused")])
+
+    async def events(input: dict, config: dict, **kwargs: object):
+        yield {
+            "event": "on_chat_model_start",
+            "name": "requested-model",
+            "run_id": "model",
+            "data": {"input": {"sent_at": "must-not-export", "prompt": "hello"}},
+        }
+        yield {
+            "event": "on_chat_model_end",
+            "name": "requested-model",
+            "run_id": "model",
+            "data": {
+                "output": AIMessage(
+                    content="done",
+                    response_metadata={"model_name": "provider-model"},
+                    usage_metadata={"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
+                )
+            },
+        }
+
+    graph.astream_events = events  # type: ignore[method-assign]
+    graph.aget_state = _fake_aget_state("done")  # type: ignore[method-assign]
+    collector = InMemorySpanExporter()
+    exporter = BoundedBatchExporter(collector)
+    await handle_slack_message(
+        {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "hello"},
+        graph=graph,
+        settings=build_test_settings(),
+        set_status=FakeSetStatus(),
+        open_thinking_stream=FakeOpenThinkingStream(),
+        download_image=FakeDownloadImage(),
+        in_flight={},
+        trace_recorder=TraceRecorder(exporter),
+    )
+    await exporter.flush()
+
+    terminal = [span for span in collector.spans if span.ended_at]
+    model = next(span for span in terminal if span.category == "model")
+    turn = next(span for span in terminal if span.category == "turn")
+    assert model.attributes["llm.model_name"] == "provider-model"
+    assert model.attributes["llm.token_count.total"] == 5
+    assert turn.attributes["turn.model_usage.completeness"] == "complete"
+    assert "sent_at" not in str(model.content)
+
+
+async def test_telemetry_capture_failure_does_not_change_the_slack_reply() -> None:
+    class BrokenRecorder(TraceRecorder):
+        async def start_step(self, *args: object, **kwargs: object) -> None:
+            raise RuntimeError("telemetry extraction failed")
+
+    graph = build_test_graph([AIMessage(content="unused")])
+    graph.astream_events = _fake_astream_events(  # type: ignore[method-assign]
+        [("run-1", "save_memory", "Saved", [], {})]
+    )
+    graph.aget_state = _fake_aget_state("reply survives")  # type: ignore[method-assign]
+    stream_factory = FakeOpenThinkingStream()
+    exporter = BoundedBatchExporter(InMemorySpanExporter())
+
+    await handle_slack_message(
+        {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "remember this"},
+        graph=graph,
+        settings=build_test_settings(),
+        set_status=FakeSetStatus(),
+        open_thinking_stream=stream_factory,
+        download_image=FakeDownloadImage(),
+        in_flight={},
+        trace_recorder=BrokenRecorder(exporter),
+    )
+
+    assert stream_factory.streams[0].finished == "reply survives"
+
+
+async def test_slack_handler_marks_mixed_model_usage_as_partial() -> None:
+    graph = build_test_graph([AIMessage(content="unused")])
+
+    async def events(input: dict, config: dict, **kwargs: object):
+        for run_id, output in (
+            (
+                "known",
+                AIMessage(
+                    content="known",
+                    usage_metadata={"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
+                ),
+            ),
+            ("unknown", AIMessage(content="unknown")),
+        ):
+            yield {"event": "on_chat_model_start", "name": "model", "run_id": run_id, "data": {}}
+            yield {
+                "event": "on_chat_model_end",
+                "name": "model",
+                "run_id": run_id,
+                "data": {"output": output},
+            }
+
+    graph.astream_events = events  # type: ignore[method-assign]
+    graph.aget_state = _fake_aget_state("done")  # type: ignore[method-assign]
+    collector = InMemorySpanExporter()
+    exporter = BoundedBatchExporter(collector)
+    await handle_slack_message(
+        {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "hello"},
+        graph=graph,
+        settings=build_test_settings(),
+        set_status=FakeSetStatus(),
+        open_thinking_stream=FakeOpenThinkingStream(),
+        download_image=FakeDownloadImage(),
+        in_flight={},
+        trace_recorder=TraceRecorder(exporter),
+    )
+    await exporter.flush()
+
+    root = next(span for span in collector.spans if span.category == "turn" and span.ended_at)
+    assert root.attributes["turn.model_usage.completeness"] == "partial"
+    assert root.attributes["turn.token_count.total"] == 5
 
 
 async def test_web_search_task_card_gets_titles_as_output_and_urls_as_sources() -> None:

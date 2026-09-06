@@ -34,14 +34,21 @@ METADATA_ALLOWLIST = frozenset(
         "service.version",
         "deployment.environment",
         "turn.status",
+        "turn.token_count.prompt",
+        "turn.token_count.completion",
+        "turn.token_count.total",
+        "turn.model_usage.completeness",
         "span.category",
-        "model.name",
+        "llm.model_name",
+        "llm.request.model_name",
+        "llm.response.model_name",
+        "llm.token_count.prompt",
+        "llm.token_count.completion",
+        "llm.token_count.total",
+        "llm.cost.total",
         "tool.name",
         "graph.node",
         "duration.ms",
-        "token.input",
-        "token.output",
-        "cost.usd",
         "retry.count",
         "error.class",
         "error.fingerprint",
@@ -177,12 +184,23 @@ class PersistentAlertPolicy:
 
 def safe_value(value: object, *, payload_limit: int = DEFAULT_PAYLOAD_LIMIT) -> object:
     """Redact recursively and limit every exported content value."""
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            dumped = model_dump()
+            if isinstance(dumped, Mapping) and "content" in dumped:
+                return safe_value(dumped["content"], payload_limit=payload_limit)
+            return safe_value(dumped, payload_limit=payload_limit)
+        except Exception:
+            # Telemetry must not make a Slack reply depend on a foreign object's serializer.
+            pass
     if isinstance(value, Mapping):
         return {
             str(key): "[REDACTED]"
             if _SECRET_NAME.search(str(key))
             else safe_value(item, payload_limit=payload_limit)
             for key, item in value.items()
+            if key != "sent_at"
         }
     if isinstance(value, (list, tuple)):
         return [safe_value(item, payload_limit=payload_limit) for item in value]
@@ -246,7 +264,7 @@ class TraceRecorder:
         allowed = _safe_metadata(attributes or {}, category)
         name = str(
             allowed.get("tool.name")
-            or allowed.get("model.name")
+            or allowed.get("llm.request.model_name")
             or allowed.get("graph.node")
             or category
         )
@@ -278,12 +296,19 @@ class TraceRecorder:
     ) -> None:
         span = self._spans.get((trace.trace_id, step_id))
         if span is not None:
-            self._finish(span, status, output, error)
+            extra_attributes = _model_attributes(output) if span.category == "model" else {}
+            self._finish(span, status, output, error, extra_attributes)
 
     def _finish(
-        self, span: TelemetrySpan, status: TraceStatus, output: object | None, error: object | None
+        self,
+        span: TelemetrySpan,
+        status: TraceStatus,
+        output: object | None,
+        error: object | None,
+        extra_attributes: Mapping[str, object] | None = None,
     ) -> None:
         content, attrs = dict(span.content), dict(span.attributes)
+        attrs.update(extra_attributes or {})
         if output is not None:
             content["output"] = safe_value(output, payload_limit=self.payload_limit)
         attrs["turn.status"] = status
@@ -291,6 +316,8 @@ class TraceRecorder:
             attrs["error.class"] = (
                 type(error).__name__ if isinstance(error, BaseException) else "error"
             )
+        if span.category == "turn":
+            attrs.update(self._turn_usage_attributes(span.trace_id))
         finished = replace(
             span, status=status, ended_at=self.now(), attributes=attrs, content=content
         )
@@ -300,12 +327,51 @@ class TraceRecorder:
                 break
         self.exporter.submit(finished)
 
+    def _turn_usage_attributes(self, trace_id: str) -> dict[str, object]:
+        model_spans = [
+            span
+            for (span_trace_id, _), span in self._spans.items()
+            if span_trace_id == trace_id and span.category == "model" and span.ended_at is not None
+        ]
+        known = [
+            span
+            for span in model_spans
+            if any(
+                key in span.attributes
+                for key in (
+                    "llm.token_count.prompt",
+                    "llm.token_count.completion",
+                    "llm.token_count.total",
+                )
+            )
+        ]
+        completeness = (
+            "unavailable"
+            if not known
+            else "complete"
+            if len(known) == len(model_spans)
+            else "partial"
+        )
+        result: dict[str, object] = {"turn.model_usage.completeness": completeness}
+        if known:
+            for source, target in (
+                ("llm.token_count.prompt", "turn.token_count.prompt"),
+                ("llm.token_count.completion", "turn.token_count.completion"),
+                ("llm.token_count.total", "turn.token_count.total"),
+            ):
+                values = [span.attributes[source] for span in known if source in span.attributes]
+                if values:
+                    result[target] = sum(
+                        value for value in values if isinstance(value, int | float)
+                    )
+        return result
+
 
 def _safe_metadata(attributes: Mapping[str, object], category: str) -> dict[str, object]:
     alias = {
         "name": "tool.name"
         if category == "tool"
-        else "model.name"
+        else "llm.request.model_name"
         if category == "model"
         else "graph.node"
     }
@@ -314,6 +380,50 @@ def _safe_metadata(attributes: Mapping[str, object], category: str) -> dict[str,
         allowed = alias.get(key, key)
         if allowed in METADATA_ALLOWLIST:
             result[allowed] = safe_value(value)
+            if allowed == "llm.request.model_name":
+                # OpenInference displays this primary identity; a response value replaces it at end.
+                result["llm.model_name"] = safe_value(value)
+    return result
+
+
+def _model_attributes(output: object | None) -> dict[str, object]:
+    """Extract only provider-reported model identity, usage, and cost."""
+    response_metadata = getattr(output, "response_metadata", None)
+    usage_metadata = getattr(output, "usage_metadata", None)
+    if isinstance(output, Mapping):
+        response_metadata = output.get("response_metadata", response_metadata)
+        usage_metadata = output.get("usage_metadata", usage_metadata)
+    response = response_metadata if isinstance(response_metadata, Mapping) else {}
+    usage = usage_metadata if isinstance(usage_metadata, Mapping) else {}
+    token_usage = response.get("token_usage")
+    if isinstance(token_usage, Mapping):
+        usage = {**token_usage, **usage}
+
+    result: dict[str, object] = {}
+    model = response.get("model_name") or response.get("model")
+    if isinstance(model, str) and model:
+        result["llm.response.model_name"] = model
+        result["llm.model_name"] = model
+    for target, names in (
+        ("llm.token_count.prompt", ("input_tokens", "prompt_tokens")),
+        ("llm.token_count.completion", ("output_tokens", "completion_tokens")),
+        ("llm.token_count.total", ("total_tokens",)),
+    ):
+        value = next(
+            (usage[name] for name in names if isinstance(usage.get(name), int | float)), None
+        )
+        if value is not None:
+            result[target] = value
+    cost = next(
+        (
+            response[name]
+            for name in ("cost_usd", "cost", "total_cost")
+            if isinstance(response.get(name), int | float)
+        ),
+        None,
+    )
+    if cost is not None:
+        result["llm.cost.total"] = cost
     return result
 
 
@@ -330,8 +440,10 @@ def _otlp_request(spans: list[TelemetrySpan]) -> ExportTraceServiceRequest:
         target.start_time_unix_nano = int(span.started_at.timestamp() * 1_000_000_000)
         if span.ended_at is not None:
             target.end_time_unix_nano = int(span.ended_at.timestamp() * 1_000_000_000)
-        # OpenTelemetry StatusCode: 0 = unset, 2 = error.
-        target.status.code = 2 if span.status == "failed" else 0
+        # OpenTelemetry StatusCode: 0 = unset, 1 = OK, 2 = error.
+        target.status.code = (
+            2 if span.status == "failed" else 1 if span.status == "completed" else 0
+        )
         _add_otlp_attributes(target, span)
     return request
 
@@ -344,4 +456,11 @@ def _add_otlp_attributes(target: Message, span: TelemetrySpan) -> None:
     for key, value in attributes.items():
         attribute = target.attributes.add()
         attribute.CopyFrom(KeyValue(key=key))
-        attribute.value.string_value = str(value)
+        if isinstance(value, bool):
+            attribute.value.bool_value = value
+        elif isinstance(value, int):
+            attribute.value.int_value = value
+        elif isinstance(value, float):
+            attribute.value.double_value = value
+        else:
+            attribute.value.string_value = str(value)

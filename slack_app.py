@@ -118,21 +118,27 @@ async def _run_turn(
                     if name == IMAGE_ANALYSIS_NODE
                     else "graph_node"
                 )
-                await trace_recorder.start_step(
-                    trace,
-                    run_id,
-                    parent_step_id,
-                    category,
-                    event.get("data", {}).get("input"),
-                    {"name": str(name)},
+                await _record_telemetry(
+                    trace_recorder.start_step(
+                        trace,
+                        run_id,
+                        parent_step_id,
+                        category,
+                        event.get("data", {}).get("input"),
+                        {"name": str(name)},
+                    )
                 )
             elif event_type in {"on_chat_model_end", "on_tool_end", "on_chain_end"}:
-                await trace_recorder.finish_step(
-                    trace, run_id, "completed", output=event.get("data", {}).get("output")
+                await _record_telemetry(
+                    trace_recorder.finish_step(
+                        trace, run_id, "completed", output=event.get("data", {}).get("output")
+                    )
                 )
             elif event_type.endswith("_error"):
-                await trace_recorder.finish_step(
-                    trace, run_id, "failed", error=event.get("data", {}).get("error")
+                await _record_telemetry(
+                    trace_recorder.finish_step(
+                        trace, run_id, "failed", error=event.get("data", {}).get("error")
+                    )
                 )
         if event_type == "on_tool_start":
             tool_input = event.get("data", {}).get("input")
@@ -165,6 +171,14 @@ async def _run_turn(
     # Slack rejects an empty text (no_text error); some models can finish with empty content.
     await stream.finish(reply or EMPTY_REPLY)
     return str(reply or EMPTY_REPLY)
+
+
+async def _record_telemetry(operation: Awaitable[None]) -> None:
+    """Keep telemetry capture failures outside Slack Turn control flow."""
+    try:
+        await operation
+    except Exception:
+        logger.exception("Telemetry capture failed")
 
 
 async def _finish_stream(stream: ThinkingStream, markdown_text: str, *, reason: str) -> None:
@@ -210,21 +224,24 @@ async def handle_slack_message(
     # placeholder posted at open time would stay stuck in front of everything that
     # follows (see ADR 0004). set_status above is Slack's own "is thinking" affordance.
     stream = await open_thinking_stream(channel, thread_id)
-    trace = (
-        await trace_recorder.start_trace(thread_id, event.get("text", ""))
-        if trace_recorder is not None
-        else None
-    )
+    trace = None
+    if trace_recorder is not None:
+        try:
+            trace = await trace_recorder.start_trace(thread_id, event.get("text", ""))
+        except Exception:
+            logger.exception("Telemetry trace start failed")
 
     async def _turn() -> None:
         try:
             reply = await _run_turn(graph, config, content, stream, trace_recorder, trace)
             if trace_recorder is not None and trace is not None:
-                await trace_recorder.finish_trace(trace, "completed", output=reply)
+                await _record_telemetry(
+                    trace_recorder.finish_trace(trace, "completed", output=reply)
+                )
         except asyncio.CancelledError:
             await _finish_stream(stream, STATUS_RESUMED, reason="cancelling a superseded turn")
             if trace_recorder is not None and trace is not None:
-                await trace_recorder.finish_trace(trace, "cancelled")
+                await _record_telemetry(trace_recorder.finish_trace(trace, "cancelled"))
             raise
         except Exception as exc:
             logger.exception(
@@ -232,7 +249,9 @@ async def handle_slack_message(
             )
             await _finish_stream(stream, ERROR_REPLY, reason="reporting a turn failure")
             if trace_recorder is not None and trace is not None:
-                await trace_recorder.finish_trace(trace, "failed", error=repr(exc))
+                await _record_telemetry(
+                    trace_recorder.finish_trace(trace, "failed", error=repr(exc))
+                )
 
     turn = asyncio.ensure_future(_turn())
     in_flight[thread_id] = turn

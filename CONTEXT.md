@@ -16,6 +16,10 @@ _Avoid_: Channel（與 Slack 自己的 channel 概念混淆）、Client
 使用者與 Assistant 之間一段持續累積的互動歷史，依 Interface 各自獨立維護；同一個 Interface 底下也可能同時存在多條（例如 Slack 以 Slack thread 為切分單位）。是 Assistant 短期上下文的來源，與跨 Conversation 都能查回的 Memory 不同。
 _Avoid_: Thread（與 Slack 自己的 thread 概念容易混淆，指稱 Conversation 時避免用這個字）, Session
 
+**Message Sent Time（訊息發送時間）**:
+HumanMessage 產生的 UTC 時間，隨 Conversation 保存，供 Assistant 解讀該訊息中的相對日期；不是 Execution Trace 的時間或軌跡內容，也不是其他訊息型別的共同欄位。
+_Avoid_: Trace Timestamp、Message Timestamp（泛指所有訊息時）
+
 **Memory（記憶）**:
 Assistant 判斷值得保留時，主動呼叫工具顯式存下的長期事實，可在未來任何一輪 Conversation 中被查回。與 Conversation 的逐輪歷史是不同概念——Memory 是被 Assistant 篩選後保留的內容，不是每輪自動產生的摘要，也不是完整逐字紀錄。
 _Avoid_: History（History 屬於 Conversation 的一部分，不是 Memory）
@@ -55,3 +59,19 @@ _Avoid_: Metadata、Raw Payload
 **Trace Metadata（軌跡中繼資料）**:
 不含對話或工具內容的 allowlist 執行索引，包括關聯識別、時間、狀態、系統與 Agent 維度、成本和遮罩統計；供長期篩選、彙總與診斷使用。
 _Avoid_: Attributes（未受限制的任意欄位）
+
+**Model Usage（模型用量）**:
+單次模型呼叫由 provider 回傳的 input、output 與 total token 計數；缺少回傳時為未知，不以零或本地估算替代。每個 Turn 可彙總其所有 Model Usage。
+_Avoid_: Token Estimate、Token Count（未指明回報來源時）
+
+**Model Usage Completeness（模型用量完整性）**:
+Turn 內各模型呼叫的 Model Usage 可用程度：全部可得為 `complete`、部分可得為 `partial`、全部未知為 `unavailable`；`partial` 的總計只代表已知值。
+_Avoid_: Total Token Count（未標示完整性時）
+
+**Reported Model Cost（已回報模型成本）**:
+provider 實際回傳的單次模型呼叫美元成本；本地或未回傳成本的模型為不適用，不以價格表推估。
+_Avoid_: Estimated Cost、Zero Cost（本地模型未計費時）
+
+**Model Identity（模型身分）**:
+模型呼叫同時記錄請求指定的模型與 provider 實際回應的模型；後者是主要辨識值，未知時才採前者。
+_Avoid_: Configured Model（單獨指稱實際執行模型時）

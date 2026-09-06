@@ -146,7 +146,7 @@ def test_current_sent_at_returns_utc_iso8601_string_with_millisecond_precision()
     assert SENT_AT_PATTERN.match(sent_at)
 
 
-def test_every_message_produced_during_a_turn_is_stamped_with_a_sent_at_timestamp() -> None:
+def test_only_human_messages_are_stamped_with_a_sent_at_timestamp() -> None:
     tool_call = {"name": "save_memory", "args": {"content": "User likes tea"}, "id": "call-1"}
     responses = [
         AIMessage(content="", tool_calls=[tool_call]),
@@ -160,8 +160,13 @@ def test_every_message_produced_during_a_turn_is_stamped_with_a_sent_at_timestam
 
     result = graph.invoke({"messages": [human_message]}, config)
 
-    for message in result["messages"]:
-        assert SENT_AT_PATTERN.match(message.additional_kwargs[SENT_AT_KEY])
+    human = next(message for message in result["messages"] if isinstance(message, HumanMessage))
+    assert SENT_AT_PATTERN.match(human.additional_kwargs[SENT_AT_KEY])
+    assert all(
+        SENT_AT_KEY not in message.additional_kwargs
+        for message in result["messages"]
+        if not isinstance(message, HumanMessage)
+    )
 
 
 def test_a_message_without_a_sent_at_timestamp_is_passed_to_the_model_unprefixed() -> None:

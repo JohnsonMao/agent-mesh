@@ -77,12 +77,76 @@ async def test_alert_policy_notifies_once_after_five_continuous_minutes() -> Non
     policy.recover("export_failure")
 
 
-def test_otlp_keeps_a_running_span_open_and_marks_failures() -> None:
+def test_otlp_uses_terminal_status_codes_without_closing_running_spans() -> None:
     started = datetime(2026, 1, 1, tzinfo=UTC)
     running = TelemetrySpan("a" * 32, "b" * 16, None, "turn", "turn", "running", started)
-    failed = TelemetrySpan("c" * 32, "d" * 16, None, "tool", "tool", "failed", started, started)
+    completed = TelemetrySpan(
+        "c" * 32, "d" * 16, None, "tool", "tool", "completed", started, started
+    )
+    failed = TelemetrySpan("e" * 32, "f" * 16, None, "tool", "tool", "failed", started, started)
+    cancelled = TelemetrySpan(
+        "1" * 32, "2" * 16, None, "tool", "tool", "cancelled", started, started
+    )
 
-    exported = _otlp_request([running, failed]).resource_spans[0].scope_spans[0].spans
+    exported = (
+        _otlp_request([running, completed, failed, cancelled])
+        .resource_spans[0]
+        .scope_spans[0]
+        .spans
+    )
 
     assert exported[0].end_time_unix_nano == 0
-    assert exported[1].status.code == 2
+    assert [span.status.code for span in exported] == [0, 1, 2, 0]
+
+
+async def test_turn_usage_is_aggregated_without_fabricating_missing_model_usage() -> None:
+    collector = InMemorySpanExporter()
+    recorder = TraceRecorder(BoundedBatchExporter(collector))
+    root = await recorder.start_trace("thread", "hello")
+    await recorder.start_step(root, "known", None, "model", attributes={"name": "requested"})
+    await recorder.finish_step(
+        root,
+        "known",
+        "completed",
+        output={
+            "response_metadata": {"model_name": "provider-model", "cost_usd": 0.03},
+            "usage_metadata": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
+        },
+    )
+    await recorder.start_step(root, "unknown", None, "model", attributes={"name": "requested"})
+    await recorder.finish_step(root, "unknown", "completed", output={})
+    await recorder.finish_trace(root, "completed")
+    await recorder.exporter.flush()
+
+    terminal = [span for span in collector.spans if span.ended_at]
+    model = next(span for span in terminal if span.category == "model" and span.ended_at)
+    turn = next(span for span in terminal if span.category == "turn")
+    assert model.attributes["llm.request.model_name"] == "requested"
+    assert model.attributes["llm.response.model_name"] == "provider-model"
+    assert model.attributes["llm.model_name"] == "provider-model"
+    assert model.attributes["llm.token_count.total"] == 5
+    assert model.attributes["llm.cost.total"] == 0.03
+    assert turn.attributes["turn.token_count.prompt"] == 2
+    assert turn.attributes["turn.token_count.completion"] == 3
+    assert turn.attributes["turn.token_count.total"] == 5
+    assert turn.attributes["turn.model_usage.completeness"] == "partial"
+
+
+async def test_missing_usage_and_cost_remain_unavailable_with_requested_model_as_fallback() -> None:
+    collector = InMemorySpanExporter()
+    recorder = TraceRecorder(BoundedBatchExporter(collector))
+    root = await recorder.start_trace("thread", "hello")
+    await recorder.start_step(root, "model", None, "model", attributes={"name": "requested"})
+    await recorder.finish_step(root, "model", "completed", output={})
+    await recorder.finish_trace(root, "completed")
+    await recorder.exporter.flush()
+
+    terminal = [span for span in collector.spans if span.ended_at]
+    model = next(span for span in terminal if span.category == "model")
+    turn = next(span for span in terminal if span.category == "turn")
+    assert model.attributes["llm.model_name"] == "requested"
+    assert "llm.response.model_name" not in model.attributes
+    assert "llm.token_count.total" not in model.attributes
+    assert "llm.cost.total" not in model.attributes
+    assert turn.attributes["turn.model_usage.completeness"] == "unavailable"
+    assert "turn.token_count.total" not in turn.attributes

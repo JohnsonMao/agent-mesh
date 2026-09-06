@@ -118,7 +118,6 @@ def call_model(
             *(_with_timestamp_prefix(message) for message in state["messages"]),
         ]
         response = llm_with_tools.invoke(messages, config)
-        response.additional_kwargs[SENT_AT_KEY] = current_sent_at()
         return {"messages": [response]}
 
     return _call_model
@@ -129,9 +128,6 @@ def _tools_node(tools: list[BaseTool]) -> Callable[[MessagesState, RunnableConfi
 
     def _run_tools(state: MessagesState, config: RunnableConfig) -> MessagesState:
         result: MessagesState = tool_node.invoke(state, config)
-        now = current_sent_at()
-        for message in result["messages"]:
-            message.additional_kwargs.setdefault(SENT_AT_KEY, now)
         return result
 
     return _run_tools
