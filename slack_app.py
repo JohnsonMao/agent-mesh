@@ -4,6 +4,8 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import aiohttp
@@ -11,6 +13,7 @@ from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.types import Command
 from psycopg import AsyncConnection
 from psycopg.rows import DictRow
 from psycopg_pool import AsyncConnectionPool
@@ -37,13 +40,20 @@ from slack_status import (
     tool_done_label,
     tool_live_label,
 )
-from slack_stream import OpenThinkingStream, SlackThinkingStream, ThinkingStream, bounded_final_text
+from slack_stream import (
+    OpenThinkingStream,
+    SlackThinkingStream,
+    ThinkingStream,
+    bounded_final_text,
+    numbered_reply_segments,
+)
 from tools import make_tools
 
 logger = logging.getLogger(__name__)
 
 ERROR_REPLY = "發生錯誤，請稍後再試"
 EMPTY_REPLY = "模型沒有產生回覆內容，請再試一次"
+PAUSED_REPLY = "這個回合需要更多推理步數。請選擇是否繼續。"
 STATUS_THINKING = "思考中…"
 STATUS_RESUMED = "已收到你的補充，重新整理回覆中…"
 
@@ -53,9 +63,23 @@ IMAGE_ANALYSIS_NODE = "analyze_images"
 
 SetStatus = Callable[[str, str, str], Awaitable[None]]
 DownloadImage = Callable[[dict], Awaitable[bytes]]
+PostReply = Callable[[str, str, str], Awaitable[None]]
+PostPauseControls = Callable[[str, str], Awaitable[None]]
 # Per-thread_id registry of the Turn (see CONTEXT.md) currently being processed,
 # so a follow-up message in the same conversation can cancel and restart it.
 InFlightTurns = dict[str, "asyncio.Task"]
+
+
+class PauseRequestedError(Exception):
+    pass
+
+
+@dataclass
+class PausedTurn:
+    allowed_user_id: str
+    expires_at: datetime
+    cancel: Callable[[], Awaitable[None]]
+    resume: Callable[[], Awaitable[None]]
 
 
 async def _build_turn_content(event: dict, download_image: DownloadImage) -> MessageContent:
@@ -91,6 +115,7 @@ async def _run_turn(
     stream: ThinkingStream,
     trace_recorder: TraceRecorder | None = None,
     trace: TelemetrySpan | None = None,
+    resume: bool = False,
 ) -> str:
     # Stream (rather than a single ainvoke) so each Thinking Step (see CONTEXT.md) -- a
     # tool call or the mandatory image-analysis step starting or finishing -- can be
@@ -99,7 +124,15 @@ async def _run_turn(
         content=content, additional_kwargs={SENT_AT_KEY: current_sent_at()}
     )
     tool_inputs: dict[str, object] = {}
-    async for event in graph.astream_events({"messages": [human_message]}, config, version="v2"):
+    paused = False
+    graph_input: Command | dict[str, list[HumanMessage]] = (
+        Command(resume=True) if resume else {"messages": [human_message]}
+    )
+    async for event in graph.astream_events(graph_input, config, version="v2"):
+        if event["event"] == "on_chain_stream" and "__interrupt__" in event.get("data", {}).get(
+            "chunk", {}
+        ):
+            paused = True
         name = event.get("name")
         run_id = str(event.get("run_id") or "")
         parent_ids = event.get("parent_ids") or []
@@ -166,11 +199,14 @@ async def _run_turn(
             await stream.update_task(run_id, tool_live_label(name), "in_progress")
         elif event_type == "on_chain_end" and name == IMAGE_ANALYSIS_NODE:
             await stream.update_task(run_id, tool_done_label(name), "complete")
+    if paused:
+        raise PauseRequestedError
     state = await graph.aget_state(config)
     reply = state.values["messages"][-1].content
     # Slack rejects an empty text (no_text error); some models can finish with empty content.
-    await stream.finish(reply or EMPTY_REPLY)
-    return str(reply or EMPTY_REPLY)
+    reply_text = str(reply or EMPTY_REPLY)
+    await stream.finish(numbered_reply_segments(reply_text)[0])
+    return reply_text
 
 
 async def _record_telemetry(operation: Awaitable[None]) -> None:
@@ -192,6 +228,29 @@ async def _finish_stream(stream: ThinkingStream, markdown_text: str, *, reason: 
         logger.exception("Failed to finish Slack stream while %s", reason)
 
 
+async def handle_paused_turn_action(
+    *, thread_id: str, user_id: str, action: str, paused_turns: dict[str, PausedTurn]
+) -> str:
+    """Authorize and apply one current Paused Turn decision."""
+    paused_turn = paused_turns.get(thread_id)
+    if paused_turn is None:
+        return "這個決定已失效，請重新送出訊息。"
+    if user_id != paused_turn.allowed_user_id:
+        return "你沒有操作這個回合的權限。"
+    if datetime.now(UTC) >= paused_turn.expires_at:
+        paused_turns.pop(thread_id, None)
+        await paused_turn.cancel()
+        return "這個決定已過期，請重新送出訊息。"
+    paused_turns.pop(thread_id)
+    if action == "stop":
+        await paused_turn.cancel()
+        return "已停止這個回合。"
+    if action == "continue":
+        asyncio.ensure_future(paused_turn.resume())
+        return "正在繼續處理。"
+    return "無法辨識這個決定。"
+
+
 async def handle_slack_message(
     event: dict,
     *,
@@ -202,6 +261,9 @@ async def handle_slack_message(
     download_image: DownloadImage,
     in_flight: InFlightTurns,
     trace_recorder: TraceRecorder | None = None,
+    post_reply: PostReply | None = None,
+    paused_turns: dict[str, PausedTurn] | None = None,
+    post_pause_controls: PostPauseControls | None = None,
 ) -> None:
     if event.get("user") != settings.slack_allowed_user_id:
         return
@@ -220,6 +282,9 @@ async def handle_slack_message(
     else:
         await set_status(channel, thread_id, STATUS_THINKING)
 
+    if paused_turns is not None and (paused_turn := paused_turns.pop(thread_id, None)):
+        await paused_turn.cancel()
+
     # No initial content here: chat.appendStream/stopStream text is cumulative, so any
     # placeholder posted at open time would stay stuck in front of everything that
     # follows (see ADR 0004). set_status above is Slack's own "is thinking" affordance.
@@ -234,6 +299,9 @@ async def handle_slack_message(
     async def _turn() -> None:
         try:
             reply = await _run_turn(graph, config, content, stream, trace_recorder, trace)
+            if post_reply is not None:
+                for segment in numbered_reply_segments(reply)[1:]:
+                    await post_reply(channel, thread_id, segment)
             if trace_recorder is not None and trace is not None:
                 _, original_length, truncated = bounded_final_text(reply)
                 await _record_telemetry(
@@ -245,6 +313,56 @@ async def handle_slack_message(
                             "turn.output.length": original_length,
                             "turn.output.truncated": truncated,
                         },
+                    )
+                )
+        except PauseRequestedError:
+            await _finish_stream(
+                stream, PAUSED_REPLY, reason="waiting for a recursion-budget decision"
+            )
+
+            async def cancel_paused_turn() -> None:
+                if trace_recorder is not None and trace is not None:
+                    await _record_telemetry(
+                        trace_recorder.finish_trace(
+                            trace, "cancelled", attributes={"turn.pause.outcome": "cancelled"}
+                        )
+                    )
+
+            async def resume_paused_turn() -> None:
+                resumed_stream = await open_thinking_stream(channel, thread_id)
+                try:
+                    reply = await _run_turn(
+                        graph,
+                        config,
+                        content,
+                        resumed_stream,
+                        trace_recorder,
+                        trace,
+                        resume=True,
+                    )
+                    if post_reply is not None:
+                        for segment in numbered_reply_segments(reply)[1:]:
+                            await post_reply(channel, thread_id, segment)
+                except PauseRequestedError:
+                    await _finish_stream(
+                        resumed_stream,
+                        PAUSED_REPLY,
+                        reason="waiting for another recursion-budget decision",
+                    )
+
+            if paused_turns is not None:
+                paused_turns[thread_id] = PausedTurn(
+                    allowed_user_id=settings.slack_allowed_user_id,
+                    expires_at=datetime.now(UTC) + timedelta(minutes=15),
+                    cancel=cancel_paused_turn,
+                    resume=resume_paused_turn,
+                )
+            if post_pause_controls is not None:
+                await post_pause_controls(channel, thread_id)
+            if trace_recorder is not None and trace is not None:
+                await _record_telemetry(
+                    trace_recorder.finish_trace(
+                        trace, "completed", attributes={"turn.pause.outcome": "paused"}
                     )
                 )
         except asyncio.CancelledError:
@@ -300,6 +418,7 @@ def _build_app(
 
         trace_recorder.exporter.alert_policy = PersistentAlertPolicy(notify_maintenance)
     in_flight: InFlightTurns = {}
+    paused_turns: dict[str, PausedTurn] = {}
     open_thinking_stream = _make_open_thinking_stream(app, settings)
 
     async def download_image(file: dict) -> bytes:
@@ -310,6 +429,42 @@ def _build_app(
             ) as response:
                 response.raise_for_status()
                 return await response.read()
+
+    async def post_reply(channel: str, thread_id: str, text: str) -> None:
+        await app.client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_id,
+            text=text,
+            unfurl_links=False,
+            unfurl_media=False,
+        )
+
+    async def post_pause_controls(channel: str, thread_id: str) -> None:
+        await app.client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_id,
+            text=PAUSED_REPLY,
+            blocks=[
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "繼續"},
+                            "action_id": "slack_turn_continue",
+                            "value": thread_id,
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "停止"},
+                            "style": "danger",
+                            "action_id": "slack_turn_stop",
+                            "value": thread_id,
+                        },
+                    ],
+                }
+            ],
+        )
 
     @app.event("message")
     async def _on_message(event: dict) -> None:
@@ -330,6 +485,25 @@ def _build_app(
             download_image=download_image,
             in_flight=in_flight,
             trace_recorder=trace_recorder,
+            post_reply=post_reply,
+            paused_turns=paused_turns,
+            post_pause_controls=post_pause_controls,
+        )
+
+    @app.action("slack_turn_continue")
+    @app.action("slack_turn_stop")
+    async def _on_pause_action(ack: Callable[[], Awaitable[None]], body: dict) -> None:
+        await ack()
+        action_payload = body["actions"][0]
+        action = "continue" if action_payload["action_id"] == "slack_turn_continue" else "stop"
+        notice = await handle_paused_turn_action(
+            thread_id=action_payload["value"],
+            user_id=body["user"]["id"],
+            action=action,
+            paused_turns=paused_turns,
+        )
+        await app.client.chat_postEphemeral(
+            channel=body["channel"]["id"], user=body["user"]["id"], text=notice
         )
 
     return app

@@ -11,17 +11,47 @@ from typing import Protocol
 from slack_sdk.models.blocks.block_elements import UrlSourceElement
 from slack_sdk.models.messages.chunk import TaskUpdateChunk
 
-SLACK_FINAL_TEXT_LIMIT = 35_000
-TRUNCATION_NOTICE = "[回覆因長度限制已截斷；如需後續內容，請要求我繼續。]"
+SLACK_SEGMENT_TEXT_LIMIT = 11_500
+_SEGMENT_CONTENT_LIMIT = 11_450
+TASK_CARD_OUTPUT_LIMIT = 1_000
+TASK_CARD_TRUNCATION_NOTICE = "\n[摘要已截斷]"
+
+
+def split_reply_segments(markdown_text: str) -> list[str]:
+    """Split a reply without loss, preferring a complete paragraph per segment."""
+    if not markdown_text:
+        return [markdown_text]
+    segments: list[str] = []
+    remaining = markdown_text
+    while len(remaining) > _SEGMENT_CONTENT_LIMIT:
+        boundary = remaining.rfind("\n\n", 0, _SEGMENT_CONTENT_LIMIT + 1)
+        cut_at = boundary + 2 if boundary >= 0 else _SEGMENT_CONTENT_LIMIT
+        segments.append(remaining[:cut_at])
+        remaining = remaining[cut_at:]
+    segments.append(remaining)
+    return segments
+
+
+def numbered_reply_segments(markdown_text: str) -> list[str]:
+    """Give multi-message replies an ordered, Slack-safe marker on every segment."""
+    segments = split_reply_segments(markdown_text)
+    if len(segments) == 1:
+        return segments
+    total = len(segments)
+    return [f"（第 {index}/{total} 段）\n\n{segment}" for index, segment in enumerate(segments, 1)]
+
+
+def bounded_task_card_output(output: str | None) -> str | None:
+    if output is None or len(output) <= TASK_CARD_OUTPUT_LIMIT:
+        return output
+    limit = TASK_CARD_OUTPUT_LIMIT - len(TASK_CARD_TRUNCATION_NOTICE)
+    return output[:limit] + TASK_CARD_TRUNCATION_NOTICE
 
 
 def bounded_final_text(markdown_text: str) -> tuple[str, int, bool]:
-    """Return Slack-safe final text without changing the model's stored reply."""
-    original_length = len(markdown_text)
-    if original_length <= SLACK_FINAL_TEXT_LIMIT:
-        return markdown_text, original_length, False
-    limit = SLACK_FINAL_TEXT_LIMIT - len(TRUNCATION_NOTICE)
-    return markdown_text[:limit] + TRUNCATION_NOTICE, original_length, True
+    """Compatibility telemetry helper describing first-segment delivery."""
+    segments = numbered_reply_segments(markdown_text)
+    return segments[0], len(markdown_text), len(segments) > 1
 
 
 class RawChatStream(Protocol):
@@ -72,7 +102,11 @@ class SlackThinkingStream:
         else:
             self._pending.pop(task_id, None)
         chunk = TaskUpdateChunk(
-            id=task_id, title=title, status=status, output=output, sources=sources
+            id=task_id,
+            title=title,
+            status=status,
+            output=bounded_task_card_output(output),
+            sources=sources,
         )
         await self._stream.append(chunks=[chunk])
 
@@ -82,5 +116,5 @@ class SlackThinkingStream:
                 chunks=[TaskUpdateChunk(id=task_id, title=title, status="error")]
             )
         self._pending.clear()
-        bounded_text, _, _ = bounded_final_text(markdown_text)
-        await self._stream.stop(markdown_text=bounded_text)
+        first_segment, _, _ = bounded_final_text(markdown_text)
+        await self._stream.stop(markdown_text=first_segment)

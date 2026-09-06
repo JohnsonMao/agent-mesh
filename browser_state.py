@@ -52,8 +52,7 @@ def reduce_browser_command(
 
 def _failed(output: str) -> bool:
     return bool(
-        re.search(r"(?:^|\n)Exit code:\s*[1-9]\d*", output)
-        or " timed out after " in output
+        re.search(r"(?:^|\n)Exit code:\s*[1-9]\d*", output) or " timed out after " in output
     )
 
 

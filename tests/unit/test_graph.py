@@ -104,7 +104,9 @@ def test_browser_command_gives_the_next_model_call_bounded_browser_state(monkeyp
     monkeypatch.setattr(
         tools_module,
         "_run_subprocess",
-        lambda *args, **kwargs: "Page URL: https://example.com\nPage Title: Example\n" + "x" * 7_000,
+        lambda *args, **kwargs: (
+            "Page URL: https://example.com\nPage Title: Example\n" + "x" * 7_000
+        ),
     )
     tool_call = {
         "name": "execute_command",
@@ -139,7 +141,11 @@ def test_new_browser_task_does_not_reuse_prior_browser_evidence(monkeypatch) -> 
     }
     model = RecordingChatModel(
         messages=iter(
-            [AIMessage(content="", tool_calls=[tool_call]), AIMessage(content="first"), AIMessage(content="new")]
+            [
+                AIMessage(content="", tool_calls=[tool_call]),
+                AIMessage(content="first"),
+                AIMessage(content="new"),
+            ]
         )
     )
     graph = build_test_graph([], llm=model)
@@ -164,7 +170,11 @@ def test_explicit_continuation_reuses_prior_browser_evidence(monkeypatch) -> Non
     }
     model = RecordingChatModel(
         messages=iter(
-            [AIMessage(content="", tool_calls=[tool_call]), AIMessage(content="first"), AIMessage(content="next")]
+            [
+                AIMessage(content="", tool_calls=[tool_call]),
+                AIMessage(content="first"),
+                AIMessage(content="next"),
+            ]
         )
     )
     graph = build_test_graph([], llm=model)
@@ -217,7 +227,9 @@ def test_assistant_gets_an_error_string_for_an_unknown_skill_name() -> None:
 def test_incomplete_load_skill_call_is_returned_to_the_model_without_invoking_the_tool() -> None:
     incomplete_call = {"name": "load_skill", "args": {}, "id": "call-1"}
     model = RecordingChatModel(
-        messages=iter([AIMessage(content="", tool_calls=[incomplete_call]), AIMessage(content="retry")])
+        messages=iter(
+            [AIMessage(content="", tool_calls=[incomplete_call]), AIMessage(content="retry")]
+        )
     )
     graph = build_test_graph([], llm=model)
     config = {"configurable": {"thread_id": "t1", "user_id": "u1"}}
@@ -245,7 +257,9 @@ def test_stream_response_reassembles_split_load_skill_arguments() -> None:
                 ),
                 AIMessageChunk(
                     content="",
-                    tool_call_chunks=[{"name": None, "args": 'wright-cli"}', "id": None, "index": 0}],
+                    tool_call_chunks=[
+                        {"name": None, "args": 'wright-cli"}', "id": None, "index": 0}
+                    ],
                     chunk_position="last",
                 ),
             ]
@@ -253,7 +267,12 @@ def test_stream_response_reassembles_split_load_skill_arguments() -> None:
     )
 
     assert response.tool_calls == [
-        {"name": "load_skill", "args": {"name": "playwright-cli"}, "id": "call-1", "type": "tool_call"}
+        {
+            "name": "load_skill",
+            "args": {"name": "playwright-cli"},
+            "id": "call-1",
+            "type": "tool_call",
+        }
     ]
 
 

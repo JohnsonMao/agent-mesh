@@ -19,11 +19,12 @@ from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres import PostgresSaver
-from langgraph.graph import StateGraph
+from langgraph.graph import END, StateGraph
 from langgraph.graph.message import MessagesState
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.store.base import BaseStore
+from langgraph.types import interrupt
 from psycopg import Connection
 from psycopg.rows import DictRow
 from psycopg_pool import ConnectionPool
@@ -48,6 +49,8 @@ BROWSER_CONTINUATION_WORDS = ("continue", "繼續", "接著", "剛剛")
 
 class AssistantState(MessagesState):
     browser_state: NotRequired[dict[str, str] | None]
+    tool_step_count: NotRequired[int]
+
 
 SYSTEM_PROMPT = (
     "You are a personal AI assistant. You may call the recall_memory tool if "
@@ -153,7 +156,8 @@ def _stream_response(chunks: Iterator[AIMessage | AIMessageChunk]) -> AIMessage:
 
 def _conversation_messages_for_model(messages: Sequence[BaseMessage]) -> list[BaseMessage]:
     latest_human = max(
-        (index for index, message in enumerate(messages) if isinstance(message, HumanMessage)), default=-1
+        (index for index, message in enumerate(messages) if isinstance(message, HumanMessage)),
+        default=-1,
     )
     latest_message = messages[latest_human] if latest_human >= 0 else None
     continuing = _requests_browser_continuation(latest_message)
@@ -179,7 +183,9 @@ def _conversation_messages_for_model(messages: Sequence[BaseMessage]) -> list[Ba
 
 def _next_browser_state(state: AssistantState) -> dict[str, str] | None:
     messages = state["messages"]
-    latest_human = next((message for message in reversed(messages) if isinstance(message, HumanMessage)), None)
+    latest_human = next(
+        (message for message in reversed(messages) if isinstance(message, HumanMessage)), None
+    )
     if latest_human is None or _requests_browser_continuation(latest_human):
         return state.get("browser_state")
     browser_messages = [
@@ -187,7 +193,11 @@ def _next_browser_state(state: AssistantState) -> dict[str, str] | None:
         for message in messages
         if isinstance(message, ToolMessage) and message.additional_kwargs.get("browser_state")
     ]
-    return state.get("browser_state") if browser_messages and messages[-1] in browser_messages else None
+    return (
+        state.get("browser_state")
+        if browser_messages and messages[-1] in browser_messages
+        else None
+    )
 
 
 def _requests_browser_continuation(message: BaseMessage | None) -> bool:
@@ -198,12 +208,16 @@ def _requests_browser_continuation(message: BaseMessage | None) -> bool:
     )
 
 
-def _tools_node(tools: list[BaseTool]) -> Callable[[AssistantState, RunnableConfig], AssistantState]:
+def _tools_node(
+    tools: list[BaseTool],
+) -> Callable[[AssistantState, RunnableConfig], AssistantState]:
     tool_node = ToolNode(tools)
 
     def _run_tools(state: AssistantState, config: RunnableConfig) -> AssistantState:
         tool_input, corrections = _validated_tool_input(state)
-        result = tool_node.invoke(tool_input, config) if tool_input is not None else {"messages": []}
+        result = (
+            tool_node.invoke(tool_input, config) if tool_input is not None else {"messages": []}
+        )
         commands = {
             str(call["id"]): str(call.get("args", {}).get("command", ""))
             for message in state["messages"]
@@ -320,6 +334,28 @@ def analyze_images(llm: BaseChatModel) -> Callable[[MessagesState, RunnableConfi
     return _analyze_images
 
 
+def pause_before_budget_exhaustion(state: AssistantState) -> AssistantState:
+    """Persist a tool-calling Turn before it reaches LangGraph's hard backstop."""
+    step_count = state.get("tool_step_count", 0) + 1
+    if step_count in {20, 40}:
+        interrupt({"kind": "recursion_budget", "tool_step_count": step_count})
+    if step_count >= 60:
+        return cast(
+            AssistantState,
+            {
+                "tool_step_count": step_count,
+                "messages": [
+                    AIMessage(content="已達到本回合可用的推理步數上限，請重新描述下一步需求。")
+                ],
+            },
+        )
+    return cast(AssistantState, {"tool_step_count": step_count})
+
+
+def _route_after_budget(state: AssistantState) -> str:
+    return END if state.get("tool_step_count", 0) >= 60 else "model"
+
+
 def build_graph(
     llm: BaseChatModel,
     tools: list[BaseTool],
@@ -332,10 +368,12 @@ def build_graph(
     graph.add_node("model", call_model(llm_with_tools, skills or []))  # type: ignore[call-overload]
     graph.add_node("tools", _tools_node(tools))  # type: ignore[call-overload]
     graph.add_node("analyze_images", analyze_images(llm))  # type: ignore[call-overload]
+    graph.add_node("budget", pause_before_budget_exhaustion)
     graph.set_conditional_entry_point(_route_after_entry)
     graph.add_edge("analyze_images", "model")
     graph.add_conditional_edges("model", tools_condition)
-    graph.add_edge("tools", "model")
+    graph.add_edge("tools", "budget")
+    graph.add_conditional_edges("budget", _route_after_budget)
     return graph.compile(checkpointer=checkpointer, store=store)
 
 

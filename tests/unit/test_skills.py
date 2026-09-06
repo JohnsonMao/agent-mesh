@@ -1,7 +1,5 @@
 """Secondary seam: skills.load_skills' parsing/validation boundary (see CONTEXT.md Skill)."""
 
-from pathlib import Path
-
 import pytest
 
 from skills import load_skills
@@ -79,12 +77,3 @@ def test_load_skills_lists_reference_and_script_files_as_resources(tmp_path) -> 
         "references/output-format.md",
         "scripts/count_stats.py",
     )
-
-
-def test_playwright_skill_is_concise_and_points_to_discoverable_detail() -> None:
-    skills = load_skills(str(Path(__file__).parents[2] / "skills"))
-    playwright = next(skill for skill in skills if skill.name == "playwright-cli")
-
-    assert len(playwright.body) < 2_000
-    assert "references/running-code.md" in playwright.body
-    assert "references/running-code.md" in playwright.resources

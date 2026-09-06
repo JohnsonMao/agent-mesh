@@ -2,7 +2,12 @@
 
 from slack_sdk.models.messages.chunk import TaskUpdateChunk
 
-from slack_stream import SlackThinkingStream
+from slack_stream import (
+    SLACK_SEGMENT_TEXT_LIMIT,
+    TASK_CARD_OUTPUT_LIMIT,
+    SlackThinkingStream,
+    split_reply_segments,
+)
 
 
 class FakeRawStream:
@@ -47,6 +52,17 @@ async def test_update_task_passes_through_output_and_sources() -> None:
     assert chunk.sources == [{"url": "http://example.com", "text": "Weather"}]
 
 
+async def test_update_task_bounds_large_output_with_an_explicit_summary_marker() -> None:
+    raw = FakeRawStream()
+    stream = SlackThinkingStream(raw)
+
+    await stream.update_task("run-1", "💻 執行指令", "complete", output="x" * 1_001)
+
+    (chunk,) = raw.appended[0]
+    assert len(chunk.output) <= TASK_CARD_OUTPUT_LIMIT
+    assert chunk.output.endswith("[摘要已截斷]")
+
+
 async def test_finish_stops_the_stream_with_the_final_text() -> None:
     raw = FakeRawStream()
     stream = SlackThinkingStream(raw)
@@ -59,15 +75,26 @@ async def test_finish_stops_the_stream_with_the_final_text() -> None:
     assert len(raw.appended) == 1
 
 
-async def test_finish_truncates_an_overlong_reply_before_stopping_the_stream() -> None:
+def test_split_reply_segments_prefers_paragraph_boundaries_and_preserves_content() -> None:
+    reply = "first paragraph\n\n" + "second paragraph" * 1_000
+
+    segments = split_reply_segments(reply)
+
+    assert "".join(segments) == reply
+    assert segments[0] == "first paragraph\n\n"
+    assert all(len(segment) <= SLACK_SEGMENT_TEXT_LIMIT for segment in segments)
+
+
+async def test_finish_uses_the_first_safe_reply_segment() -> None:
     raw = FakeRawStream()
     stream = SlackThinkingStream(raw)
+    reply = "a" * (SLACK_SEGMENT_TEXT_LIMIT + 1)
 
-    await stream.finish("a" * 35_100)
+    await stream.finish(reply)
 
     assert raw.stopped_with is not None
-    assert len(raw.stopped_with) <= 35_000
-    assert raw.stopped_with.endswith("[回覆因長度限制已截斷；如需後續內容，請要求我繼續。]")
+    assert raw.stopped_with.startswith("（第 1/2 段）\n\n")
+    assert len(raw.stopped_with) <= SLACK_SEGMENT_TEXT_LIMIT
 
 
 async def test_finish_resolves_any_still_in_progress_task_to_error_first() -> None:

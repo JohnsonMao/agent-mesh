@@ -1,13 +1,14 @@
 """Seam: handle_slack_message (DM event in, open_thinking_stream calls out)."""
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 
 from conftest import build_test_graph, build_test_settings
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from slack_sdk.models.blocks.block_elements import UrlSourceElement
 
 from execution_traces import BoundedBatchExporter, InMemorySpanExporter, TraceRecorder
-from slack_app import InFlightTurns, handle_slack_message
+from slack_app import InFlightTurns, PausedTurn, handle_paused_turn_action, handle_slack_message
 
 
 class FakeThinkingStream:
@@ -67,6 +68,14 @@ class FakeSetStatus:
         self.calls.append((channel, thread_id, status))
 
 
+class FakePostReply:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+
+    async def __call__(self, channel: str, thread_id: str, text: str) -> None:
+        self.calls.append((channel, thread_id, text))
+
+
 class FakeDownloadImage:
     """Records which Slack file objects were requested and hands back scripted bytes."""
 
@@ -79,6 +88,38 @@ class FakeDownloadImage:
         if file["id"] not in self.results:
             raise RuntimeError(f"no fake download configured for {file['id']}")
         return self.results[file["id"]]
+
+
+async def test_only_the_allowed_user_can_stop_the_current_paused_turn() -> None:
+    cancelled = False
+
+    async def cancel() -> None:
+        nonlocal cancelled
+        cancelled = True
+
+    async def resume() -> None:
+        raise AssertionError("stop must not resume")
+
+    paused_turns = {
+        "111.1": PausedTurn(
+            allowed_user_id="U_ALLOWED",
+            expires_at=datetime.now(UTC) + timedelta(minutes=15),
+            cancel=cancel,
+            resume=resume,
+        )
+    }
+
+    rejected = await handle_paused_turn_action(
+        thread_id="111.1", user_id="U_STRANGER", action="stop", paused_turns=paused_turns
+    )
+    accepted = await handle_paused_turn_action(
+        thread_id="111.1", user_id="U_ALLOWED", action="stop", paused_turns=paused_turns
+    )
+
+    assert rejected == "你沒有操作這個回合的權限。"
+    assert accepted == "已停止這個回合。"
+    assert cancelled is True
+    assert paused_turns == {}
 
 
 def _fake_astream_events(
@@ -146,6 +187,29 @@ async def test_replies_to_a_top_level_dm_using_its_own_ts_as_thread_id() -> None
     assert stream.finished == "Hello! How can I help?"
     assert set_status.calls == [("D1", "111.1", "思考中…")]
     assert in_flight == {}
+
+
+async def test_delivers_remaining_long_reply_segments_in_the_same_conversation() -> None:
+    reply = "first paragraph\n\n" + "x" * 12_000
+    open_thinking_stream = FakeOpenThinkingStream()
+    post_reply = FakePostReply()
+
+    await handle_slack_message(
+        {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "long"},
+        graph=build_test_graph([AIMessage(content=reply)]),
+        settings=build_test_settings(),
+        set_status=FakeSetStatus(),
+        open_thinking_stream=open_thinking_stream,
+        download_image=FakeDownloadImage(),
+        in_flight={},
+        post_reply=post_reply,
+    )
+
+    assert open_thinking_stream.streams[0].finished is not None
+    assert open_thinking_stream.streams[0].finished.startswith("（第 1/")
+    assert len(post_reply.calls) == 2
+    assert post_reply.calls[0][0:2] == ("D1", "111.1")
+    assert post_reply.calls[0][2].startswith("（第 2/")
 
 
 async def test_a_tool_call_updates_its_task_from_in_progress_to_complete() -> None:
