@@ -30,6 +30,7 @@ _NAMED_SECRET = re.compile(
 
 METADATA_ALLOWLIST = frozenset(
     {
+        "openinference.span.kind",
         "service.name",
         "service.version",
         "deployment.environment",
@@ -58,6 +59,14 @@ METADATA_ALLOWLIST = frozenset(
         "payload.dropped",
     }
 )
+
+_OPENINFERENCE_SPAN_KIND = {
+    "turn": "AGENT",
+    "model": "LLM",
+    "tool": "TOOL",
+    "graph_node": "CHAIN",
+    "image_analysis": "CHAIN",
+}
 
 
 @dataclass(frozen=True)
@@ -237,11 +246,14 @@ class TraceRecorder:
             "turn",
             "running",
             self.now(),
-            attributes={"service.name": "assistant", "span.category": "turn"},
+            attributes={
+                "service.name": "assistant",
+                "span.category": "turn",
+                "openinference.span.kind": _OPENINFERENCE_SPAN_KIND["turn"],
+            },
             content={"input": safe_value(input, payload_limit=self.payload_limit)},
         )
         self._spans[(root.trace_id, root.span_id)] = root
-        self.exporter.submit(root)
         return root
 
     async def finish_trace(
@@ -286,7 +298,6 @@ class TraceRecorder:
             else {},
         )
         self._spans[(trace.trace_id, step_id)] = span
-        self.exporter.submit(span)
 
     async def finish_step(
         self,
@@ -379,6 +390,11 @@ def _safe_metadata(attributes: Mapping[str, object], category: str) -> dict[str,
         else "graph.node"
     }
     result: dict[str, object] = {"span.category": category}
+    if openinference_kind := _OPENINFERENCE_SPAN_KIND.get(category):
+        # Phoenix indexes LLM usage only for OpenInference LLM spans. Our local
+        # category is retained for application-specific filtering, not as a
+        # substitute for the standard semantic convention.
+        result["openinference.span.kind"] = openinference_kind
     for key, value in attributes.items():
         allowed = alias.get(key, key)
         if allowed in METADATA_ALLOWLIST:

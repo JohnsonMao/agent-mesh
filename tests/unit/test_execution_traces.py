@@ -35,6 +35,7 @@ async def test_one_turn_exports_a_redacted_root_and_parented_child_span() -> Non
     assert child.parent_span_id == root.span_id
     assert child.attributes == {
         "span.category": "tool",
+        "openinference.span.kind": "TOOL",
         "tool.name": "web_search",
         "turn.status": "completed",
     }
@@ -49,7 +50,9 @@ async def test_export_failure_and_full_queue_do_not_raise_to_the_turn() -> None:
     bounded = BoundedBatchExporter(FailingExporter(), max_queue_size=1)
     recorder = TraceRecorder(bounded)
     root = await recorder.start_trace("thread", "hello")
+    other_root = await recorder.start_trace("other-thread", "hello")
     await recorder.finish_trace(root, "completed", output="still replies")
+    await recorder.finish_trace(other_root, "completed", output="still replies")
     await bounded.flush()
 
     assert bounded.dropped_events >= 1
@@ -124,6 +127,7 @@ async def test_turn_usage_is_aggregated_without_fabricating_missing_model_usage(
     assert model.attributes["llm.request.model_name"] == "requested"
     assert model.attributes["llm.response.model_name"] == "provider-model"
     assert model.attributes["llm.model_name"] == "provider-model"
+    assert model.attributes["openinference.span.kind"] == "LLM"
     assert model.attributes["llm.token_count.total"] == 5
     assert model.attributes["llm.cost.total"] == 0.03
     assert turn.attributes["turn.token_count.prompt"] == 2
