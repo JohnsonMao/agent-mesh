@@ -11,6 +11,18 @@ from typing import Protocol
 from slack_sdk.models.blocks.block_elements import UrlSourceElement
 from slack_sdk.models.messages.chunk import TaskUpdateChunk
 
+SLACK_FINAL_TEXT_LIMIT = 35_000
+TRUNCATION_NOTICE = "[回覆因長度限制已截斷；如需後續內容，請要求我繼續。]"
+
+
+def bounded_final_text(markdown_text: str) -> tuple[str, int, bool]:
+    """Return Slack-safe final text without changing the model's stored reply."""
+    original_length = len(markdown_text)
+    if original_length <= SLACK_FINAL_TEXT_LIMIT:
+        return markdown_text, original_length, False
+    limit = SLACK_FINAL_TEXT_LIMIT - len(TRUNCATION_NOTICE)
+    return markdown_text[:limit] + TRUNCATION_NOTICE, original_length, True
+
 
 class RawChatStream(Protocol):
     """The subset of slack_sdk's AsyncChatStream this module depends on."""
@@ -70,4 +82,5 @@ class SlackThinkingStream:
                 chunks=[TaskUpdateChunk(id=task_id, title=title, status="error")]
             )
         self._pending.clear()
-        await self._stream.stop(markdown_text=markdown_text)
+        bounded_text, _, _ = bounded_final_text(markdown_text)
+        await self._stream.stop(markdown_text=bounded_text)

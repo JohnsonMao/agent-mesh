@@ -38,6 +38,8 @@ METADATA_ALLOWLIST = frozenset(
         "turn.token_count.completion",
         "turn.token_count.total",
         "turn.model_usage.completeness",
+        "turn.output.length",
+        "turn.output.truncated",
         "span.category",
         "llm.model_name",
         "llm.request.model_name",
@@ -249,8 +251,9 @@ class TraceRecorder:
         *,
         output: object | None = None,
         error: object | None = None,
+        attributes: Mapping[str, object] | None = None,
     ) -> None:
-        self._finish(trace, status, output, error)
+        self._finish(trace, status, output, error, attributes)
 
     async def start_step(
         self,

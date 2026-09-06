@@ -1,12 +1,20 @@
 """Graph assembly and CLI entrypoint for the Assistant."""
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime
-from typing import cast
+from typing import NotRequired, cast
 
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+    message_chunk_to_message,
+)
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -20,6 +28,7 @@ from psycopg import Connection
 from psycopg.rows import DictRow
 from psycopg_pool import ConnectionPool
 
+from browser_state import reduce_browser_command
 from config import load_settings
 from llm import build_llm
 from long_term_memory import DEFAULT_POOL_KWARGS, build_store
@@ -34,6 +43,11 @@ USER_ID = "the-user"
 # so the model can tell how long ago an older message in the Conversation was sent.
 SENT_AT_KEY = "sent_at"
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%f"
+BROWSER_CONTINUATION_WORDS = ("continue", "繼續", "接著", "剛剛")
+
+
+class AssistantState(MessagesState):
+    browser_state: NotRequired[dict[str, str] | None]
 
 SYSTEM_PROMPT = (
     "You are a personal AI assistant. You may call the recall_memory tool if "
@@ -111,26 +125,140 @@ def _system_prompt(skills: list[Skill]) -> str:
 def call_model(
     llm_with_tools: Runnable[LanguageModelInput, AIMessage],
     skills: list[Skill],
-) -> Callable[[MessagesState, RunnableConfig], MessagesState]:
-    def _call_model(state: MessagesState, config: RunnableConfig) -> MessagesState:
-        messages = [
+) -> Callable[[AssistantState, RunnableConfig], AssistantState]:
+    def _call_model(state: AssistantState, config: RunnableConfig) -> AssistantState:
+        messages = _conversation_messages_for_model(state["messages"])
+        prompt_messages = [
             SystemMessage(content=_system_prompt(skills)),
-            *(_with_timestamp_prefix(message) for message in state["messages"]),
+            *(_with_timestamp_prefix(message) for message in messages),
         ]
-        response = llm_with_tools.invoke(messages, config)
-        return {"messages": [response]}
+        response = _stream_response(llm_with_tools.stream(prompt_messages, config))
+        return {"messages": [response], "browser_state": _next_browser_state(state)}
 
     return _call_model
 
 
-def _tools_node(tools: list[BaseTool]) -> Callable[[MessagesState, RunnableConfig], MessagesState]:
+def _stream_response(chunks: Iterator[AIMessage | AIMessageChunk]) -> AIMessage:
+    """Reassemble streamed chunks before ToolNode validates a complete tool call."""
+    collected = list(chunks)
+    if not collected:
+        raise RuntimeError("Model stream ended without a response")
+    if isinstance(collected[0], AIMessage) and not isinstance(collected[0], AIMessageChunk):
+        return collected[0]
+    response = message_chunk_to_message(sum(collected[1:], collected[0]))
+    if not isinstance(response, AIMessage):
+        raise RuntimeError("Model stream did not produce an AI message")
+    return response
+
+
+def _conversation_messages_for_model(messages: Sequence[BaseMessage]) -> list[BaseMessage]:
+    latest_human = max(
+        (index for index, message in enumerate(messages) if isinstance(message, HumanMessage)), default=-1
+    )
+    latest_message = messages[latest_human] if latest_human >= 0 else None
+    continuing = _requests_browser_continuation(latest_message)
+    latest_browser = max(
+        (
+            index
+            for index, message in enumerate(messages)
+            if isinstance(message, ToolMessage) and message.additional_kwargs.get("browser_state")
+        ),
+        default=-1,
+    )
+    return [
+        message
+        for index, message in enumerate(messages)
+        if not (
+            isinstance(message, ToolMessage)
+            and message.additional_kwargs.get("browser_state")
+            and index < latest_human
+            and (not continuing or index != latest_browser)
+        )
+    ]
+
+
+def _next_browser_state(state: AssistantState) -> dict[str, str] | None:
+    messages = state["messages"]
+    latest_human = next((message for message in reversed(messages) if isinstance(message, HumanMessage)), None)
+    if latest_human is None or _requests_browser_continuation(latest_human):
+        return state.get("browser_state")
+    browser_messages = [
+        message
+        for message in messages
+        if isinstance(message, ToolMessage) and message.additional_kwargs.get("browser_state")
+    ]
+    return state.get("browser_state") if browser_messages and messages[-1] in browser_messages else None
+
+
+def _requests_browser_continuation(message: BaseMessage | None) -> bool:
+    return (
+        isinstance(message, HumanMessage)
+        and isinstance(message.content, str)
+        and any(word in message.content.lower() for word in BROWSER_CONTINUATION_WORDS)
+    )
+
+
+def _tools_node(tools: list[BaseTool]) -> Callable[[AssistantState, RunnableConfig], AssistantState]:
     tool_node = ToolNode(tools)
 
-    def _run_tools(state: MessagesState, config: RunnableConfig) -> MessagesState:
-        result: MessagesState = tool_node.invoke(state, config)
-        return result
+    def _run_tools(state: AssistantState, config: RunnableConfig) -> AssistantState:
+        tool_input, corrections = _validated_tool_input(state)
+        result = tool_node.invoke(tool_input, config) if tool_input is not None else {"messages": []}
+        commands = {
+            str(call["id"]): str(call.get("args", {}).get("command", ""))
+            for message in state["messages"]
+            if isinstance(message, AIMessage)
+            for call in message.tool_calls
+            if call["name"] == "execute_command"
+        }
+        browser_state = state.get("browser_state")
+        messages: list[BaseMessage] = []
+        for message in [*result["messages"], *corrections]:
+            if isinstance(message, ToolMessage) and (command := commands.get(message.tool_call_id)):
+                reduction = reduce_browser_command(command, str(message.content), browser_state)
+                if reduction is not None:
+                    browser_state = reduction.state
+                    messages.append(
+                        message.model_copy(
+                            update={
+                                "content": reduction.model_content,
+                                "additional_kwargs": {"browser_state": True},
+                            }
+                        )
+                    )
+                    continue
+            messages.append(message)
+        return cast(AssistantState, {"messages": messages, "browser_state": browser_state})
 
     return _run_tools
+
+
+def _validated_tool_input(state: AssistantState) -> tuple[AssistantState | None, list[ToolMessage]]:
+    """Keep malformed model tool calls out of the side-effect boundary."""
+    latest = state["messages"][-1]
+    if not isinstance(latest, AIMessage):
+        return state, []
+    invalid = [
+        call
+        for call in latest.tool_calls
+        if call["name"] == "load_skill" and not isinstance(call.get("args", {}).get("name"), str)
+    ]
+    if not invalid:
+        return state, []
+    corrections = [
+        ToolMessage(
+            content="load_skill required skill name. Retry with an exact name from the available skills list.",
+            name="load_skill",
+            tool_call_id=str(call["id"]),
+            status="error",
+        )
+        for call in invalid
+    ]
+    valid_calls = [call for call in latest.tool_calls if call not in invalid]
+    if not valid_calls:
+        return None, corrections
+    messages = [*state["messages"][:-1], latest.model_copy(update={"tool_calls": valid_calls})]
+    return cast(AssistantState, {**state, "messages": messages}), corrections
 
 
 def _has_image_content(message: BaseMessage) -> bool:
@@ -200,7 +328,7 @@ def build_graph(
     skills: list[Skill] | None = None,
 ) -> CompiledStateGraph:
     llm_with_tools = llm.bind_tools(tools)
-    graph = StateGraph(MessagesState)
+    graph = StateGraph(AssistantState)
     graph.add_node("model", call_model(llm_with_tools, skills or []))  # type: ignore[call-overload]
     graph.add_node("tools", _tools_node(tools))  # type: ignore[call-overload]
     graph.add_node("analyze_images", analyze_images(llm))  # type: ignore[call-overload]

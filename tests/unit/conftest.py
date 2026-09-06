@@ -1,7 +1,7 @@
 """Shared fixtures for unit tests: fake chat model, fake embeddings, test graph builder."""
 
 import hashlib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import Any
 
 from langchain_core.embeddings import Embeddings
@@ -31,6 +31,11 @@ class FakeToolChatModel(GenericFakeChatModel):
         **kwargs: Any,
     ) -> "FakeToolChatModel":
         return self
+
+    def stream(
+        self, input: LanguageModelInput, config: RunnableConfig | None = None, **kwargs: Any
+    ) -> Iterator[AIMessage]:
+        yield self.invoke(input, config, **kwargs)
 
 
 class FakeEmbeddings(Embeddings):

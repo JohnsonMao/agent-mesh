@@ -3,7 +3,7 @@
 import asyncio
 
 from conftest import build_test_graph, build_test_settings
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from slack_sdk.models.blocks.block_elements import UrlSourceElement
 
 from execution_traces import BoundedBatchExporter, InMemorySpanExporter, TraceRecorder
@@ -204,6 +204,8 @@ async def test_records_a_completed_turn_and_its_tool_step_without_changing_slack
     step = next(span for span in terminal if span.category == "tool")
     assert root.status == "completed"
     assert root.content["output"] == "done"
+    assert root.attributes["turn.output.length"] == 4
+    assert root.attributes["turn.output.truncated"] is False
     assert root.content["input"] == "TOKEN=[REDACTED]"
     assert step.status == "completed"
     assert len(str(step.content["output"])) == 8_000
@@ -260,8 +262,8 @@ async def test_model_usage_and_message_sent_time_are_normalised_for_telemetry() 
             "name": "requested-model",
             "run_id": "model",
             "data": {
-                "output": AIMessage(
-                    content="done",
+                "output": AIMessageChunk(
+                    content="",
                     response_metadata={"model_name": "provider-model"},
                     usage_metadata={"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
                 )

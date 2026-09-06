@@ -4,10 +4,10 @@ import re
 from datetime import UTC, datetime
 
 from conftest import RecordingChatModel, build_test_graph, build_test_settings
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
 import tools as tools_module
-from main import SENT_AT_KEY, current_sent_at
+from main import SENT_AT_KEY, _stream_response, current_sent_at
 
 SENT_AT_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 
@@ -100,6 +100,82 @@ def test_assistant_executes_command_via_explicit_tool_call() -> None:
     assert "running command" in tool_message.content
 
 
+def test_browser_command_gives_the_next_model_call_bounded_browser_state(monkeypatch) -> None:
+    monkeypatch.setattr(
+        tools_module,
+        "_run_subprocess",
+        lambda *args, **kwargs: "Page URL: https://example.com\nPage Title: Example\n" + "x" * 7_000,
+    )
+    tool_call = {
+        "name": "execute_command",
+        "args": {"command": "playwright-cli snapshot"},
+        "id": "call-1",
+    }
+    model = RecordingChatModel(
+        messages=iter([AIMessage(content="", tool_calls=[tool_call]), AIMessage(content="done")])
+    )
+    graph = build_test_graph([], llm=model)
+    config = {"configurable": {"thread_id": "t-browser", "user_id": "u1"}}
+
+    graph.invoke({"messages": [HumanMessage(content="inspect the page")]}, config)
+
+    next_call = model.received_messages[-1]
+    browser_result = next(message for message in next_call if isinstance(message, ToolMessage))
+    assert "Browser State" in browser_result.content
+    assert len(browser_result.content) < 7_000
+    assert "Page Title: Example" in browser_result.content
+
+
+def test_new_browser_task_does_not_reuse_prior_browser_evidence(monkeypatch) -> None:
+    monkeypatch.setattr(
+        tools_module,
+        "_run_subprocess",
+        lambda *args, **kwargs: "Page URL: https://old.example\nsecret old evidence",
+    )
+    tool_call = {
+        "name": "execute_command",
+        "args": {"command": "playwright-cli snapshot"},
+        "id": "call-1",
+    }
+    model = RecordingChatModel(
+        messages=iter(
+            [AIMessage(content="", tool_calls=[tool_call]), AIMessage(content="first"), AIMessage(content="new")]
+        )
+    )
+    graph = build_test_graph([], llm=model)
+    config = {"configurable": {"thread_id": "t-browser", "user_id": "u1"}}
+    graph.invoke({"messages": [HumanMessage(content="inspect the page")]}, config)
+
+    graph.invoke({"messages": [HumanMessage(content="what is the weather?")]}, config)
+
+    assert "secret old evidence" not in str(model.received_messages[-1])
+
+
+def test_explicit_continuation_reuses_prior_browser_evidence(monkeypatch) -> None:
+    monkeypatch.setattr(
+        tools_module,
+        "_run_subprocess",
+        lambda *args, **kwargs: "Page URL: https://old.example\ncontinuable evidence",
+    )
+    tool_call = {
+        "name": "execute_command",
+        "args": {"command": "playwright-cli snapshot"},
+        "id": "call-1",
+    }
+    model = RecordingChatModel(
+        messages=iter(
+            [AIMessage(content="", tool_calls=[tool_call]), AIMessage(content="first"), AIMessage(content="next")]
+        )
+    )
+    graph = build_test_graph([], llm=model)
+    config = {"configurable": {"thread_id": "t-browser", "user_id": "u1"}}
+    graph.invoke({"messages": [HumanMessage(content="inspect the page")]}, config)
+
+    graph.invoke({"messages": [HumanMessage(content="continue with that page")]}, config)
+
+    assert "continuable evidence" in str(model.received_messages[-1])
+
+
 def test_assistant_loads_a_skill_via_explicit_tool_call(tmp_path) -> None:
     skill_dir = tmp_path / "greeting"
     skill_dir.mkdir()
@@ -136,6 +212,49 @@ def test_assistant_gets_an_error_string_for_an_unknown_skill_name() -> None:
 
     tool_message = next(m for m in result["messages"] if isinstance(m, ToolMessage))
     assert "No skill named 'nonexistent' found" in tool_message.content
+
+
+def test_incomplete_load_skill_call_is_returned_to_the_model_without_invoking_the_tool() -> None:
+    incomplete_call = {"name": "load_skill", "args": {}, "id": "call-1"}
+    model = RecordingChatModel(
+        messages=iter([AIMessage(content="", tool_calls=[incomplete_call]), AIMessage(content="retry")])
+    )
+    graph = build_test_graph([], llm=model)
+    config = {"configurable": {"thread_id": "t1", "user_id": "u1"}}
+
+    result = graph.invoke({"messages": [HumanMessage(content="use a skill")]}, config)
+
+    assert result["messages"][-1].content == "retry"
+    correction = next(
+        message
+        for message in model.received_messages[-1]
+        if isinstance(message, ToolMessage) and message.tool_call_id == "call-1"
+    )
+    assert "required skill name" in correction.content
+
+
+def test_stream_response_reassembles_split_load_skill_arguments() -> None:
+    response = _stream_response(
+        iter(
+            [
+                AIMessageChunk(
+                    content="",
+                    tool_call_chunks=[
+                        {"name": "load_skill", "args": '{"name":"play', "id": "call-1", "index": 0}
+                    ],
+                ),
+                AIMessageChunk(
+                    content="",
+                    tool_call_chunks=[{"name": None, "args": 'wright-cli"}', "id": None, "index": 0}],
+                    chunk_position="last",
+                ),
+            ]
+        )
+    )
+
+    assert response.tool_calls == [
+        {"name": "load_skill", "args": {"name": "playwright-cli"}, "id": "call-1", "type": "tool_call"}
+    ]
 
 
 def test_current_sent_at_returns_utc_iso8601_string_with_millisecond_precision() -> None:

@@ -32,6 +32,18 @@ _Avoid_: Function, Action, Skill（Skill 不執行外部動作，只提供指示
 開發者預先撰寫、存放在 repo 內的固定文件，內容是 Assistant 完成特定任務所需的額外指示或工作流程知識，本身不對外產生副作用。每個 Skill 都有 `name` 與 `description`，隨時列在 system prompt 中供 Assistant 判斷是否相關；正文（instructions）則等 Assistant 主動載入時才進入 context（漸進式載入）。除了正文，Skill 的目錄底下也可以放 `references/`（延伸文件）、`scripts/`（輔助腳本）等輔助檔案，同樣採漸進式載入——只有正文預設隨載入回傳，輔助檔案要等 Assistant 主動讀取或執行才會進入 context。跨 Interface 共用同一套。
 _Avoid_: Tool（Skill 沒有外部副作用；即使 Skill 目錄下的腳本被執行，產生副作用的是 Tool，不是 Skill 本身）, Memory（Skill 是開發者預先撰寫的靜態知識，不是 Assistant 在對話中判斷保留的動態事實）
 
+**Browser State（瀏覽器狀態）**:
+一個 Conversation 內最近一次有效的瀏覽器工作階段及其受限頁面證據，僅在使用者明確要求延續時供 Assistant 重用；新 state 會取代舊 state，失敗則保留最後有效 state 並另記最近錯誤，不是永久累積的 Tool 輸出或 Conversation history。
+_Avoid_: Browser History、Playwright Output、DOM Snapshot
+
+**Page Evidence（頁面證據）**:
+Browser State 內為回答或下一個瀏覽器操作按需取得的一個受限頁面區段；它可以是 heading outline 或局部內容，並會由較新的目標區段取代，不宣稱代表完整頁面。
+_Avoid_: Full Page Text、Snapshot History
+
+**Browser State Reducer（瀏覽器狀態歸約器）**:
+在瀏覽器 CLI 結果進入 Conversation 前，將其轉換為 Browser State 與受限 Page Evidence 的處理邊界；它不執行瀏覽器副作用，也不是 Tool。
+_Avoid_: Playwright Tool、CLI Wrapper
+
 **Turn（回合）**:
 Conversation 內一次使用者輸入到 Assistant 產生對應回覆為止的單位。取消重來（例如使用者在上一個 Turn 還沒回覆完就補充新訊息）是以 Turn 為粒度中斷、重新開始，不影響該 Turn 之前已經存在的 Conversation 歷史。
 _Avoid_: Message（Message 是 Turn 的輸入或輸出之一，不是 Turn 本身）, Round

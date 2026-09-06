@@ -59,6 +59,17 @@ async def test_finish_stops_the_stream_with_the_final_text() -> None:
     assert len(raw.appended) == 1
 
 
+async def test_finish_truncates_an_overlong_reply_before_stopping_the_stream() -> None:
+    raw = FakeRawStream()
+    stream = SlackThinkingStream(raw)
+
+    await stream.finish("a" * 35_100)
+
+    assert raw.stopped_with is not None
+    assert len(raw.stopped_with) <= 35_000
+    assert raw.stopped_with.endswith("[回覆因長度限制已截斷；如需後續內容，請要求我繼續。]")
+
+
 async def test_finish_resolves_any_still_in_progress_task_to_error_first() -> None:
     raw = FakeRawStream()
     stream = SlackThinkingStream(raw)

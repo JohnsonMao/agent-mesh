@@ -37,7 +37,7 @@ from slack_status import (
     tool_done_label,
     tool_live_label,
 )
-from slack_stream import OpenThinkingStream, SlackThinkingStream, ThinkingStream
+from slack_stream import OpenThinkingStream, SlackThinkingStream, ThinkingStream, bounded_final_text
 from tools import make_tools
 
 logger = logging.getLogger(__name__)
@@ -235,8 +235,17 @@ async def handle_slack_message(
         try:
             reply = await _run_turn(graph, config, content, stream, trace_recorder, trace)
             if trace_recorder is not None and trace is not None:
+                _, original_length, truncated = bounded_final_text(reply)
                 await _record_telemetry(
-                    trace_recorder.finish_trace(trace, "completed", output=reply)
+                    trace_recorder.finish_trace(
+                        trace,
+                        "completed",
+                        output=reply,
+                        attributes={
+                            "turn.output.length": original_length,
+                            "turn.output.truncated": truncated,
+                        },
+                    )
                 )
         except asyncio.CancelledError:
             await _finish_stream(stream, STATUS_RESUMED, reason="cancelling a superseded turn")
