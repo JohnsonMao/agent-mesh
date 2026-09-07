@@ -28,6 +28,7 @@ from execution_traces import (
     TelemetrySpan,
     TraceRecorder,
 )
+from graph_nodes import FORMAL_GRAPH_NODES, IMAGE_ANALYSIS_NODE
 from llm import build_llm
 from long_term_memory import DEFAULT_POOL_KWARGS, build_async_store
 from main import SENT_AT_KEY, USER_ID, build_graph, current_sent_at
@@ -59,8 +60,6 @@ STATUS_RESUMED = "已收到你的補充，重新整理回覆中…"
 
 # The processing step that turns image content into text (see CONTEXT.md: Thinking
 # Step, ADR 0006) -- not a Tool, so it needs its own on_chain_start/on_chain_end check.
-IMAGE_ANALYSIS_NODE = "analyze_images"
-
 SetStatus = Callable[[str, str, str], Awaitable[None]]
 DownloadImage = Callable[[dict], Awaitable[bytes]]
 PostReply = Callable[[str, str, str], Awaitable[None]]
@@ -124,6 +123,7 @@ async def _run_turn(
         content=content, additional_kwargs={SENT_AT_KEY: current_sent_at()}
     )
     tool_inputs: dict[str, object] = {}
+    recorded_step_ids: set[str] = set()
     paused = False
     graph_input: Command | dict[str, list[HumanMessage]] = (
         Command(resume=True) if resume else {"messages": [human_message]}
@@ -135,22 +135,25 @@ async def _run_turn(
             paused = True
         name = event.get("name")
         run_id = str(event.get("run_id") or "")
-        parent_ids = event.get("parent_ids") or []
-        parent_step_id = str(parent_ids[-1]) if parent_ids else None
+        parent_ids = [str(parent_id) for parent_id in event.get("parent_ids") or []]
+        parent_step_id = next(
+            (parent_id for parent_id in reversed(parent_ids) if parent_id in recorded_step_ids),
+            None,
+        )
         event_type = event["event"]
         if trace_recorder is not None and trace is not None and run_id:
             # The public graph event stream is the capture boundary; it deliberately
             # avoids changing graph callbacks or Slack Thinking Step behavior.
-            if event_type in {"on_chat_model_start", "on_tool_start", "on_chain_start"}:
+            is_formal_node = event_type == "on_chain_start" and name in FORMAL_GRAPH_NODES
+            if event_type in {"on_chat_model_start", "on_tool_start"} or is_formal_node:
                 category = (
                     "model"
                     if event_type == "on_chat_model_start"
                     else "tool"
                     if event_type == "on_tool_start"
-                    else "image_analysis"
-                    if name == IMAGE_ANALYSIS_NODE
                     else "graph_node"
                 )
+                recorded_step_ids.add(run_id)
                 await _record_telemetry(
                     trace_recorder.start_step(
                         trace,
@@ -161,7 +164,9 @@ async def _run_turn(
                         {"name": str(name)},
                     )
                 )
-            elif event_type in {"on_chat_model_end", "on_tool_end", "on_chain_end"}:
+            elif event_type in {"on_chat_model_end", "on_tool_end"} or (
+                event_type == "on_chain_end" and name in FORMAL_GRAPH_NODES
+            ):
                 await _record_telemetry(
                     trace_recorder.finish_step(
                         trace, run_id, "completed", output=event.get("data", {}).get("output")

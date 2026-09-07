@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime
-from typing import NotRequired, cast
+from typing import Literal, NotRequired, cast
 
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -22,7 +22,7 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import MessagesState
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.prebuilt import ToolNode
 from langgraph.store.base import BaseStore
 from langgraph.types import interrupt
 from psycopg import Connection
@@ -31,6 +31,7 @@ from psycopg_pool import ConnectionPool
 
 from browser_state import reduce_browser_command
 from config import load_settings
+from graph_nodes import BUDGET_NODE, IMAGE_ANALYSIS_NODE, MODEL_NODE, TOOLS_NODE
 from llm import build_llm
 from long_term_memory import DEFAULT_POOL_KWARGS, build_store
 from skills import Skill, load_skills
@@ -291,11 +292,11 @@ def _extract_text(content: Sequence[object]) -> str:
     )
 
 
-def _route_after_entry(state: MessagesState) -> str:
+def _route_after_entry(state: MessagesState) -> Literal["image input", "ordinary input"]:
     messages = state["messages"]
     if messages and _has_image_content(messages[-1]):
-        return "analyze_images"
-    return "model"
+        return "image input"
+    return "ordinary input"
 
 
 def analyze_images(llm: BaseChatModel) -> Callable[[MessagesState, RunnableConfig], MessagesState]:
@@ -352,8 +353,13 @@ def pause_before_budget_exhaustion(state: AssistantState) -> AssistantState:
     return cast(AssistantState, {"tool_step_count": step_count})
 
 
-def _route_after_budget(state: AssistantState) -> str:
-    return END if state.get("tool_step_count", 0) >= 60 else "model"
+def _route_after_model(state: AssistantState) -> Literal["tool call", "response complete"]:
+    latest = state["messages"][-1]
+    return "tool call" if isinstance(latest, AIMessage) and latest.tool_calls else "response complete"
+
+
+def _route_after_budget(state: AssistantState) -> Literal["budget available", "absolute limit"]:
+    return "absolute limit" if state.get("tool_step_count", 0) >= 60 else "budget available"
 
 
 def build_graph(
@@ -365,15 +371,24 @@ def build_graph(
 ) -> CompiledStateGraph:
     llm_with_tools = llm.bind_tools(tools)
     graph = StateGraph(AssistantState)
-    graph.add_node("model", call_model(llm_with_tools, skills or []))  # type: ignore[call-overload]
-    graph.add_node("tools", _tools_node(tools))  # type: ignore[call-overload]
-    graph.add_node("analyze_images", analyze_images(llm))  # type: ignore[call-overload]
-    graph.add_node("budget", pause_before_budget_exhaustion)
-    graph.set_conditional_entry_point(_route_after_entry)
-    graph.add_edge("analyze_images", "model")
-    graph.add_conditional_edges("model", tools_condition)
-    graph.add_edge("tools", "budget")
-    graph.add_conditional_edges("budget", _route_after_budget)
+    graph.add_node(MODEL_NODE, call_model(llm_with_tools, skills or []))  # type: ignore[call-overload]
+    graph.add_node(TOOLS_NODE, _tools_node(tools))  # type: ignore[call-overload]
+    graph.add_node(IMAGE_ANALYSIS_NODE, analyze_images(llm))  # type: ignore[call-overload]
+    graph.add_node(BUDGET_NODE, pause_before_budget_exhaustion)
+    graph.set_conditional_entry_point(
+        _route_after_entry,
+        {"image input": IMAGE_ANALYSIS_NODE, "ordinary input": MODEL_NODE},
+    )
+    graph.add_edge(IMAGE_ANALYSIS_NODE, MODEL_NODE)
+    graph.add_conditional_edges(
+        MODEL_NODE, _route_after_model, {"tool call": TOOLS_NODE, "response complete": END}
+    )
+    graph.add_edge(TOOLS_NODE, BUDGET_NODE)
+    graph.add_conditional_edges(
+        BUDGET_NODE,
+        _route_after_budget,
+        {"budget available": MODEL_NODE, "absolute limit": END},
+    )
     return graph.compile(checkpointer=checkpointer, store=store)
 
 

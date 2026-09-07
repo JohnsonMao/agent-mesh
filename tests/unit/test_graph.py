@@ -7,9 +7,30 @@ from conftest import RecordingChatModel, build_test_graph, build_test_settings
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
 import tools as tools_module
+from graph_nodes import FORMAL_GRAPH_NODES
 from main import SENT_AT_KEY, _stream_response, current_sent_at
 
 SENT_AT_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+
+
+def test_compiled_graph_exposes_formal_nodes_and_conditional_routes() -> None:
+    graph = build_test_graph([AIMessage(content="unused")]).get_graph()
+
+    assert set(FORMAL_GRAPH_NODES) == {"model", "tools", "analyze_images", "budget"}
+    assert set(graph.nodes) == {"__start__", *FORMAL_GRAPH_NODES, "__end__"}
+    assert {
+        (edge.source, edge.target, edge.data)
+        for edge in graph.edges
+    } == {
+        ("__start__", "analyze_images", "image input"),
+        ("__start__", "model", "ordinary input"),
+        ("analyze_images", "model", None),
+        ("model", "tools", "tool call"),
+        ("model", "__end__", "response complete"),
+        ("tools", "budget", None),
+        ("budget", "model", "budget available"),
+        ("budget", "__end__", "absolute limit"),
+    }
 
 
 def test_assistant_replies_without_calling_any_tool() -> None:

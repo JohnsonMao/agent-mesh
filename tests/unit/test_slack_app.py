@@ -304,11 +304,83 @@ async def test_records_model_and_image_analysis_steps() -> None:
     await exporter.flush()
     terminal = [span for span in collector.spans if span.ended_at]
     assert [(span.category, span.status) for span in terminal if span.category != "turn"] == [
-        ("image_analysis", "completed"),
+        ("graph_node", "completed"),
         ("model", "completed"),
     ]
     root = next(span for span in terminal if span.category == "turn")
     assert root.attributes["turn.model_usage.completeness"] == "unavailable"
+
+
+async def test_execution_path_filters_internal_chains_and_keeps_model_and_tool_children() -> None:
+    graph = build_test_graph([AIMessage(content="unused")])
+
+    async def events(input: dict, config: dict, **kwargs: object):
+        del input, config, kwargs
+        for event in (
+            {"event": "on_chain_start", "name": "model", "run_id": "node", "data": {}},
+            {
+                "event": "on_chain_start",
+                "name": "RunnableSequence",
+                "run_id": "internal",
+                "parent_ids": ["node"],
+                "data": {},
+            },
+            {
+                "event": "on_chat_model_start",
+                "name": "provider-model",
+                "run_id": "llm",
+                "parent_ids": ["node", "internal"],
+                "data": {},
+            },
+            {
+                "event": "on_chat_model_end",
+                "name": "provider-model",
+                "run_id": "llm",
+                "parent_ids": ["node", "internal"],
+                "data": {},
+            },
+            {
+                "event": "on_tool_start",
+                "name": "web_search",
+                "run_id": "tool",
+                "parent_ids": ["node", "internal"],
+                "data": {"input": {"query": "x"}},
+            },
+            {
+                "event": "on_tool_error",
+                "name": "web_search",
+                "run_id": "tool",
+                "parent_ids": ["node", "internal"],
+                "data": {"error": RuntimeError("failed")},
+            },
+            {"event": "on_chain_end", "name": "model", "run_id": "node", "data": {}},
+        ):
+            yield event
+
+    graph.astream_events = events  # type: ignore[method-assign]
+    graph.aget_state = _fake_aget_state("done")  # type: ignore[method-assign]
+    collector = InMemorySpanExporter()
+    exporter = BoundedBatchExporter(collector)
+    await handle_slack_message(
+        {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "hello"},
+        graph=graph,
+        settings=build_test_settings(),
+        set_status=FakeSetStatus(),
+        open_thinking_stream=FakeOpenThinkingStream(),
+        download_image=FakeDownloadImage(),
+        in_flight={},
+        trace_recorder=TraceRecorder(exporter),
+    )
+    await exporter.flush()
+
+    terminal = [span for span in collector.spans if span.ended_at and span.category != "turn"]
+    assert [(span.name, span.category, span.status) for span in terminal] == [
+        ("provider-model", "model", "completed"),
+        ("web_search", "tool", "failed"),
+        ("model", "graph_node", "completed"),
+    ]
+    node = next(span for span in terminal if span.category == "graph_node")
+    assert all(span.parent_span_id == node.span_id for span in terminal if span is not node)
 
 
 async def test_model_usage_and_message_sent_time_are_normalised_for_telemetry() -> None:
