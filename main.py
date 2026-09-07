@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime
-from typing import Literal, NotRequired, cast
+from typing import NotRequired, cast
 
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -31,7 +31,19 @@ from psycopg_pool import ConnectionPool
 
 from browser_state import reduce_browser_command
 from config import load_settings
-from graph_nodes import BUDGET_NODE, IMAGE_ANALYSIS_NODE, MODEL_NODE, TOOLS_NODE
+from graph_nodes import (
+    ABSOLUTE_LIMIT_ROUTE,
+    BUDGET_AVAILABLE_ROUTE,
+    BUDGET_NODE,
+    IMAGE_ANALYSIS_NODE,
+    IMAGE_INPUT_ROUTE,
+    MODEL_NODE,
+    ORDINARY_INPUT_ROUTE,
+    RESPONSE_COMPLETE_ROUTE,
+    TOOL_CALL_ROUTE,
+    TOOLS_NODE,
+    RouteOutcome,
+)
 from llm import build_llm
 from long_term_memory import DEFAULT_POOL_KWARGS, build_store
 from skills import Skill, load_skills
@@ -292,11 +304,11 @@ def _extract_text(content: Sequence[object]) -> str:
     )
 
 
-def _route_after_entry(state: MessagesState) -> Literal["image input", "ordinary input"]:
+def _route_after_entry(state: MessagesState) -> RouteOutcome:
     messages = state["messages"]
     if messages and _has_image_content(messages[-1]):
-        return "image input"
-    return "ordinary input"
+        return IMAGE_INPUT_ROUTE
+    return ORDINARY_INPUT_ROUTE
 
 
 def analyze_images(llm: BaseChatModel) -> Callable[[MessagesState, RunnableConfig], MessagesState]:
@@ -353,13 +365,13 @@ def pause_before_budget_exhaustion(state: AssistantState) -> AssistantState:
     return cast(AssistantState, {"tool_step_count": step_count})
 
 
-def _route_after_model(state: AssistantState) -> Literal["tool call", "response complete"]:
+def _route_after_model(state: AssistantState) -> RouteOutcome:
     latest = state["messages"][-1]
-    return "tool call" if isinstance(latest, AIMessage) and latest.tool_calls else "response complete"
+    return TOOL_CALL_ROUTE if isinstance(latest, AIMessage) and latest.tool_calls else RESPONSE_COMPLETE_ROUTE
 
 
-def _route_after_budget(state: AssistantState) -> Literal["budget available", "absolute limit"]:
-    return "absolute limit" if state.get("tool_step_count", 0) >= 60 else "budget available"
+def _route_after_budget(state: AssistantState) -> RouteOutcome:
+    return ABSOLUTE_LIMIT_ROUTE if state.get("tool_step_count", 0) >= 60 else BUDGET_AVAILABLE_ROUTE
 
 
 def build_graph(
@@ -377,17 +389,19 @@ def build_graph(
     graph.add_node(BUDGET_NODE, pause_before_budget_exhaustion)
     graph.set_conditional_entry_point(
         _route_after_entry,
-        {"image input": IMAGE_ANALYSIS_NODE, "ordinary input": MODEL_NODE},
+        {IMAGE_INPUT_ROUTE: IMAGE_ANALYSIS_NODE, ORDINARY_INPUT_ROUTE: MODEL_NODE},
     )
     graph.add_edge(IMAGE_ANALYSIS_NODE, MODEL_NODE)
     graph.add_conditional_edges(
-        MODEL_NODE, _route_after_model, {"tool call": TOOLS_NODE, "response complete": END}
+        MODEL_NODE,
+        _route_after_model,
+        {TOOL_CALL_ROUTE: TOOLS_NODE, RESPONSE_COMPLETE_ROUTE: END},
     )
     graph.add_edge(TOOLS_NODE, BUDGET_NODE)
     graph.add_conditional_edges(
         BUDGET_NODE,
         _route_after_budget,
-        {"budget available": MODEL_NODE, "absolute limit": END},
+        {BUDGET_AVAILABLE_ROUTE: MODEL_NODE, ABSOLUTE_LIMIT_ROUTE: END},
     )
     return graph.compile(checkpointer=checkpointer, store=store)
 

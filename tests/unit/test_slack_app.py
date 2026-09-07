@@ -383,6 +383,65 @@ async def test_execution_path_filters_internal_chains_and_keeps_model_and_tool_c
     assert all(span.parent_span_id == node.span_id for span in terminal if span is not node)
 
 
+async def test_execution_steps_close_on_graph_and_model_errors_and_tool_completion() -> None:
+    graph = build_test_graph([AIMessage(content="unused")])
+
+    async def events(input: dict, config: dict, **kwargs: object):
+        del input, config, kwargs
+        for event in (
+            {"event": "on_chain_start", "name": "budget", "run_id": "node", "data": {}},
+            {
+                "event": "on_chain_error",
+                "name": "budget",
+                "run_id": "node",
+                "data": {"error": RuntimeError("budget failed")},
+            },
+            {"event": "on_chat_model_start", "name": "model", "run_id": "llm", "data": {}},
+            {
+                "event": "on_chat_model_error",
+                "name": "model",
+                "run_id": "llm",
+                "data": {"error": RuntimeError("model failed")},
+            },
+            {
+                "event": "on_tool_start",
+                "name": "save_memory",
+                "run_id": "tool",
+                "data": {"input": {"content": "x"}},
+            },
+            {
+                "event": "on_tool_end",
+                "name": "save_memory",
+                "run_id": "tool",
+                "data": {"output": ToolMessage(content="saved", tool_call_id="call")},
+            },
+        ):
+            yield event
+
+    graph.astream_events = events  # type: ignore[method-assign]
+    graph.aget_state = _fake_aget_state("done")  # type: ignore[method-assign]
+    collector = InMemorySpanExporter()
+    exporter = BoundedBatchExporter(collector)
+    await handle_slack_message(
+        {"user": "U_ALLOWED", "channel": "D1", "ts": "111.1", "text": "hello"},
+        graph=graph,
+        settings=build_test_settings(),
+        set_status=FakeSetStatus(),
+        open_thinking_stream=FakeOpenThinkingStream(),
+        download_image=FakeDownloadImage(),
+        in_flight={},
+        trace_recorder=TraceRecorder(exporter),
+    )
+    await exporter.flush()
+
+    terminal = [span for span in collector.spans if span.ended_at and span.category != "turn"]
+    assert [(span.category, span.status) for span in terminal] == [
+        ("graph_node", "failed"),
+        ("model", "failed"),
+        ("tool", "completed"),
+    ]
+
+
 async def test_model_usage_and_message_sent_time_are_normalised_for_telemetry() -> None:
     graph = build_test_graph([AIMessage(content="unused")])
 

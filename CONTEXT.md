@@ -60,6 +60,14 @@ _Avoid_: Status（Status 是呈現用的文字，Thinking Step 是背後代表�
 一筆對應一個 Turn 的持久化除錯紀錄，保留 `completed`、`failed` 或 `cancelled` 的生命週期、輸入與輸出，以及按時間排序的 Thinking Step，供維運者事後檢視。
 _Avoid_: Log（Log 是未結構化的診斷輸出，不保證能重建一個 Turn）、Conversation（Conversation 是短期對話歷史，不是單次執行紀錄）
 
+**Graph Topology（圖譜拓撲）**:
+Assistant 所有可能處理節點與路由關係的靜態結構，不表示任何一次 Turn 實際經過的路徑。
+_Avoid_: Execution Path、Execution Trace、Graph（未說明是靜態結構時）
+
+**Execution Path（執行路徑）**:
+一個 Turn 在 Graph Topology 中實際經過的節點與路由順序；它是 Execution Trace 可呈現的一個面向，不包含完整的輸入、輸出、耗時或錯誤資料。
+_Avoid_: Graph Topology、Execution Trace
+
 **Execution Step（執行步驟）**:
 Execution Trace 內一筆有開始與結束、可選父步驟的可觀察處理紀錄；可對應模型呼叫、Tool 呼叫或強制型處理步驟，並可帶有摘要、耗時與錯誤結果。
 _Avoid_: Thinking Step（Thinking Step 是使用者可見的領域概念；Execution Step 是其為除錯而保存的紀錄）
